@@ -99,7 +99,12 @@ bool hud_1080_texture(const Texture& t) {
 int32_t hud_quarters() {
     static const int32_t q = [] {
         const char* e = std::getenv("NX_HUD_RES");
-        return e && std::atoi(e) == 900 ? 5 : 6;
+        if (e && std::atoi(e) == 900) return 5;
+        // docs/PERF-DESIGN.md §2: NX_HUD_RES=1440 (the 2K presets) draws the HUD, the menus and the window at 2x of
+        // their 1280x720 art, 2560x1440, so they are not upscaled from 1080p on a 1440p picture. Never above the
+        // render target the game actually made (nvn_present scales the rest): an explicit 1080p still wins.
+        if (e && std::atoi(e) == 1440) return 8;
+        return 6;
     }();
     return q;
 }

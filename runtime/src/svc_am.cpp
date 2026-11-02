@@ -5,6 +5,7 @@
 
 #include "ipc.h"
 #include "language.h"
+#include "perf_profile.h"
 #include "users.h"
 
 namespace nx {
@@ -66,10 +67,18 @@ std::shared_ptr<Service> common_state_getter() {
         s.cmds[66] = [](IpcCtx&) { return 0u; };
         // NX_RENDER_RES=<w>x<h>: the size the game renders at, while it stays docked (a resolution scale: the game sizes
         // its window textures and targets from this answer; the present step stretches the picture to the window).
+        // docs/PERF-DESIGN.md §2: when NX_RENDER_RES is not written, the perf profile's render_height decides the height
+        // instead (0 = the upstream answer: 1280x720 handheld, 1920x1080 docked). 16:9 is kept, the game's own aspect.
         static const std::pair<uint32_t, uint32_t> res = [] {
             uint32_t w = handheld ? 1280 : 1920, h = handheld ? 720 : 1080, rw = 0, rh = 0;
-            if (const char* e = std::getenv("NX_RENDER_RES"); e && std::sscanf(e, "%ux%u", &rw, &rh) == 2 && rw >= 320 && rh >= 180)
+            if (const char* e = std::getenv("NX_RENDER_RES"); e && std::sscanf(e, "%ux%u", &rw, &rh) == 2 && rw >= 320 && rh >= 180) {
                 w = rw, h = rh;
+            } else if (const uint32_t ph = perf::explicit_render_height(perf::profile()); ph) {
+                // 16:9 from the height, rounded to even; the same numbers the launcher's presets name (2560x1440, ...).
+                h = ph & ~1u;
+                w = ((ph * 16u / 9u) + 1u) & ~1u;
+            }
+            nx::log("am: the game renders at %ux%u (%s)", w, h, handheld ? "handheld" : "docked");
             return std::pair<uint32_t, uint32_t>{w, h};
         }();
         s.cmds[60] = [](IpcCtx& c) {  // GetDefaultDisplayResolution

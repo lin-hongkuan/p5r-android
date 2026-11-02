@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "nvn_vk.h"
+#include "perf_profile.h"
 #include "platform.h"
 #include "touch_layout.h"
 
@@ -131,18 +132,26 @@ struct Pass {
     bool fsr_logged = false;
 } g;
 
+// FSR 1 on the present pass (docs/PERF-DESIGN.md §2/§4). Upstream turns it on with NX_FSR=1 only. Here the quality
+// presets turn it on by themselves: an explicit NX_FSR always wins (0 turns it off, 1 on), and with nothing written the
+// 2K/quality presets get it (their picture is upscaled from a smaller render target, which is exactly what FSR 1 is
+// for). Balance (the default) stays off, so the upstream devices are untouched.
 bool fsr_on() {
     static const bool on = [] {
-        const char* e = std::getenv("NX_FSR");
-        return e && e[0] == '1';
+        if (const char* e = std::getenv("NX_FSR"); e && e[0]) return e[0] == '1';
+        const perf::Mode m = perf::profile().mode;
+        return m == perf::Mode::Quality || m == perf::Mode::K2 || m == perf::Mode::K290 || m == perf::Mode::Ultra;
     }();
     return on;
 }
 
 float fsr_sharpness() {  // stops of sharpening: 0 the most, 2 none (FSR's own default is 0.2)
     static const float v = [] {
-        const char* e = std::getenv("NX_FSR_SHARP");
-        return e ? std::max(0.0f, std::min(2.0f, float(std::atof(e)))) : 0.2f;
+        if (const char* e = std::getenv("NX_FSR_SHARP")) return std::max(0.0f, std::min(2.0f, float(std::atof(e))));
+        // The higher the preset, the softer the upscale is already: sharpen a little more there (a lower value sharpens
+        // more, as upstream's scale). 0.2 is FSR 1's own default and stays for the default profile.
+        const perf::Mode m = perf::profile().mode;
+        return m == perf::Mode::Ultra ? 0.0f : m == perf::Mode::K290 ? 0.1f : 0.2f;
     }();
     return v;
 }
