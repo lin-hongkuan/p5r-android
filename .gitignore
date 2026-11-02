@@ -15,3 +15,11 @@ __pycache__/
 # Local tooling state and run logs.
 nx.log
 *.log
+
+# Scratch output from local compiler probes and proofs (CONTRIBUTING-FORK.md §2: temporary work goes in private/,
+# which is ignored above). These patterns only catch build artifacts, never sources.
+*.exe
+*.o
+*.obj
+tests/tmp_*.cpp
+
