@@ -32,3 +32,22 @@ VkResult enumerate(const std::vector<T>& all, uint64_t count_ptr, uint64_t out) 
 }
 
 }  // namespace nx::vk::bridge
+
+namespace nx::vk {
+
+// ---- present mode (vk_swapchain.cpp) ----
+
+const char* present_mode_name(VkPresentModeKHR m);  // for logs
+
+// The one place a present mode is decided: vk_swapchain.cpp::adapt_to_surface (a game that makes its own swapchains)
+// and nvn_vk.cpp::make_swapchain (NVN's, which is what P5R uses) both come here, so the two cannot disagree.
+//
+// `auto_pref`/`auto_count` are the modes the caller would have picked before the perf profile existed, best first; with
+// present_mode unset (the default) that list is walked exactly as before, so the default is upstream's choice byte for
+// byte. An explicit present_mode replaces it with the mode asked for and a safe fallback chain (immediate -> mailbox ->
+// fifo, or mailbox -> immediate -> fifo), checked against vkGetPhysicalDeviceSurfacePresentModesKHR, FIFO last. Logs
+// what it actually chose under `who`.
+VkPresentModeKHR resolve_present_mode(VkPhysicalDevice pd, VkSurfaceKHR surface, const VkPresentModeKHR* auto_pref,
+                                      size_t auto_count, const char* who);
+
+}  // namespace nx::vk

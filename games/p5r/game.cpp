@@ -17,6 +17,8 @@
 #include <nx/game.h>
 #include <nx/runtime.h>
 
+#include "perf_profile.h"
+#include "perf_thermal.h"
 #include "platform.h"
 
 namespace nx {
@@ -83,6 +85,10 @@ void fputs_logged(CPU& c) {
 // data folder holding a number overrides the floor everywhere while it exists (read every ~2 s; to test).
 // NX_P5R_AUTO_FPS=0: the target is the cap. NX_P5R_FPS=<5..60>: a fixed target with its own interval, to study.
 // NX_P5R_TRACE_INTERVAL=1: the setter's calls are logged.
+//
+// The cap itself is the fps 档位's (pace(), above): fps_mode / NX_FPS_CAP pick the target, the display's rate and the
+// present interval together, because the speed is right only when the presents reach the target. Nothing written keeps
+// upstream's 30 (or 60 for NX_FPS_CAP>=60).
 uint64_t g_interval_setter = 0;  // the original setter (call(c, it))
 uint64_t g_main_base = 0;
 constexpr double kTicks = 19.2e6;  // the system tick the engine times its frames with
@@ -112,9 +118,109 @@ int forced_fps() {
     return fps;
 }
 
-int cap_fps() {
-    static const int fps = env_int("NX_FPS_CAP", 30) >= 60 ? 60 : 30;
-    return fps;
+// ---- the frame rate 档位 (fps_mode, docs/PERF-DESIGN.md §2; perf_profile.h) ------------------------------------------
+//
+// The game steps 1 / target per presented frame (the comment above), so the speed is right if and only if the presents
+// reach the target. The three numbers are therefore one decision, not three: the 档位 picks the cap, the display's rate
+// (the rate NVN counts present intervals in: perf_profile's vsync_hz, 60 when nothing is written) and the whole present
+// interval decide the rate the presents can reach, and the target's ceiling is that rate.
+//
+//   fps_mode  display  interval  cap   what the game runs at
+//   30        60 Hz    2         30    upstream's 30 fps mode (NX_FPS_CAP=30)
+//   45        90 Hz    2         45    only on a 90 Hz display: 60/45 vsyncs is not a whole interval
+//   60        60 Hz    1         60    upstream's 60 fps mode (NX_FPS_CAP=60)
+//   90        90 Hz    1         90    experimental: steps of 1/90 s (PERF-DESIGN §1.1)
+//   120       120 Hz   1         120   experimental
+//   0         --       1         60    no target: present pacing off (uncap_present), steps stay 60 Hz
+//
+// The display column is perf_profile's vsync_hz, and PERF-DESIGN §3.1 makes the panel follow the request: fps_mode 90 or
+// 120 with refresh_hz unset derives refresh_hz = fps, so the panel really runs at 90/120 Hz and the interval is 1. A 120
+// Hz panel asked for 90 therefore gets 90 Hz, not 120 fps (which round(120/90) = 1 would have presented); the round-down
+// below only fires for combinations that are genuinely impossible, e.g. fps_mode=120 with an explicit refresh_hz=90.
+//
+// The cap is always the rate the chosen interval really presents at, hz / interval, never the bare request: an interval
+// is a whole number of vsyncs, so a request the display cannot present is rounded down to the nearest achievable rate
+// and the request itself is logged as unreachable. That keeps the invariant that matters -- the logic never steps
+// faster than the screen presents -- which is what makes the game speed right. 90 or 45 on a 60 Hz display therefore
+// run at 60 (interval 1), 60 on a 90 Hz one at 45 (interval 2), 120 on a 90 Hz one at 90, 90 on a 120 Hz one at 60.
+// NX_FPS_CAP still wins where it is written, with its own meaning (>= 60 means 60, else 30), so a config written before
+// this module behaves exactly as it did; 45/90/120 come from fps_mode.
+//
+// The default-path equivalence table (the regression guard: re-check these four rows before changing anything here,
+// they are the whole reason this file is safe to extend). Left: what upstream computed. Right: what this file computes
+// with the same switches. `nothing written` is fps_configured == false, i.e. neither fps_mode nor NX_FPS_CAP was set.
+//
+//   switches                     upstream                     here (cap / interval)
+//   nothing written              cap 30, interval 2          30 / 2   (fps_configured false -> requested 30)
+//   NX_FPS_CAP=30                cap 30, interval 2          30 / 2   (requested 30)
+//   NX_FPS_CAP=60                cap 60, interval 1          60 / 1   (requested 60)
+//   NX_FPS_CAP=90                cap 60, interval 1          60 / 1   (>= 60 collapses to 60, upstream's own rule)
+//
+// The last row is upstream's quirk, kept deliberately: NX_FPS_CAP cannot express 90 (docs/PERF-DESIGN.md §3.2, the
+// launcher drops it for 90/120/uncapped and writes fps_mode instead). It is also why NX_FPS_CAP outranks fps_mode here:
+// an old config keeps its old meaning. Verified by running perf_profile's real helpers: nothing written gives
+// requested 30, interval 2, cap 30; NX_FPS_CAP=60 gives 60/1/60; NX_FPS_CAP=30 gives 30/2/30.
+struct Pace {
+    int cap = 30;        // the target's ceiling, and the rate the presents reach: hz / interval
+    int interval = 2;    // NVN present interval (vsyncs per frame), 1..4
+    int requested = 30;  // what the switches asked for: 30/45/60/90/120, or 0 for no target
+    unsigned hz = 60;    // the rate present intervals are counted in (perf_profile: vsync_hz, 60 upstream)
+    bool exact = true;   // false: the request cannot be presented as asked (logged once at startup)
+};
+
+const Pace& pace() {
+    static const Pace p = [] {
+        Pace p;
+        const nx::perf::Profile& prof = nx::perf::profile();
+        p.hz = nx::perf::effective_refresh_hz(prof);  // 60 with nothing written: upstream counted intervals in 60 Hz
+        if (p.hz == 0) p.hz = 60;                    // unreachable through resolve(), but a 0 divisor would divide by 0
+        if (const char* e = std::getenv("NX_FPS_CAP"); e && *e) {
+            // Upstream's switch, upstream's expression, and it wins over fps_mode (PERF-DESIGN §2, compat).
+            p.requested = std::atoi(e) >= 60 ? 60 : 30;
+        } else {
+            // Nothing written at all: upstream's default (NX_FPS_CAP's own fallback of 30).
+            p.requested = prof.fps_configured ? prof.fps : 30;
+        }
+        if (p.requested <= 0) {  // fps_mode=0, no target: the pacing is the runtime's (perf_profile's uncap_present)
+            p.cap = 60, p.interval = 1;  // the steps stay at 60 Hz so the game keeps real time while it can
+            return p;
+        }
+        // perf_profile's own rounding (max(1, round(hz / fps)), 1..4), on a copy whose fps is the one that won above:
+        // profile().fps folds NX_FPS_CAP in only when fps_mode is not written, and NX_FPS_CAP wins over fps_mode here.
+        nx::perf::Profile want = prof;
+        want.fps = p.requested;
+        p.interval = int(nx::perf::present_interval(want));
+        // The ceiling is what that interval actually presents at, not what was asked.
+        p.cap = int(std::lround(double(p.hz) / double(p.interval)));
+        // Rounding down, not to nearest, when the nearest interval overshoots: 90 fps on a 120 Hz display is
+        // round(120/90) = 1, i.e. 120 presents. The game's speed would still be right (the target becomes 120 and the
+        // presents reach it), but the player asked for 90 and would get 120 fps' GPU time and heat, on the exact
+        // hardware where that is the scarce thing (PERF-DESIGN §5). One interval longer is always slower, never
+        // faster, so 90 on 120 Hz is 60 (interval 2) and is logged as such. (At the interval limit, 4, a request can
+        // still come out faster than asked -- 30 fps on a 144 Hz display is 36 -- and is logged too.)
+        if (p.cap > p.requested && p.interval < 4) {
+            p.interval++;
+            p.cap = int(std::lround(double(p.hz) / double(p.interval)));
+        }
+        p.exact = p.cap == p.requested;
+        return p;
+    }();
+    return p;
+}
+
+// The cap: the highest target the game's logic may run at, i.e. the rate the presents can actually reach. The paced
+// target (paced_target) and the lowest ones (min_fps) are clamped to it, so the game never steps faster than it draws.
+int cap_fps() { return pace().cap; }
+
+// The one startup line the fps policy is checked with from logcat, and the warning when the request cannot be
+// presented as asked.
+void log_fps_mode() {
+    const Pace& p = pace();
+    log("p5r: fps mode %s: target %d, present interval %d, display %u Hz",
+        p.requested ? std::to_string(p.requested).c_str() : "uncapped", p.cap, p.interval, p.hz);
+    if (!p.exact)
+        log("p5r: warning: %d fps cannot be presented on a %u Hz display with whole present intervals: %d fps at "
+            "interval %d instead", p.requested, p.hz, p.cap, p.interval);
 }
 
 bool auto_fps() {
@@ -347,11 +453,25 @@ void frame_origin() {
 void interval_setter_hook(CPU& c) {
     scan_tasks();
     const uint64_t period = game_clock();
+    // The thermal guard (docs/PERF-DESIGN.md §4.5): one real frame duration per call, measured by game_clock() above.
+    // No second timer and no extra thread; when the tablet gets hot it lowers the target and logs why.
+    nx::thermal::on_frame(int64_t(period));
     frame_origin();
     const int now = target_fps();
-    int fps = forced_fps();
-    const int interval = fps ? std::clamp(60 / fps, 1, 4) : 60 / cap_fps();
+    const int forced = forced_fps();
+    int fps = forced;
+    // The interval is the 档位's (pace()): the vsyncs per frame that present the cap at the display's rate, 1 for 90 and
+    // 120 fps on a 90/120 Hz display, 2 for 30 fps on a 60 Hz one. NX_P5R_FPS is the study switch: it keeps its own
+    // 60 / fps interval (its targets are 5..60 and it is not part of the 档位).
+    int interval = forced ? std::clamp(60 / forced, 1, 4) : pace().interval;
     if (!fps) fps = !auto_fps() ? cap_fps() : period ? paced_target(period, now) : now;
+    // Thermal guard, layer 2 (§4.5.1): when it has capped the frame rate, the target AND the interval must both move.
+    // Changing the target alone would leave interval 1 in place, and the engine steps 1/target per present — at 60
+    // presents with a target of 30 the game would run at double speed. So the cap carries its own interval.
+    if (const int tcap = nx::thermal::fps_cap_now(); tcap > 0 && fps > tcap) {
+        fps = tcap;
+        interval = std::clamp(int(std::lround(double(pace().hz) / double(tcap))), 1, 4);
+    }
     if (fps > 0 && now > 0 && now != fps) {
         static int logged = 0;  // the automatic target moves every frame: only the first changes
         if (logged++ < 3) log("p5r: target frame rate %d -> %d%s", now, fps, auto_fps() && !forced_fps() ? " (follows the device)" : "");
@@ -551,6 +671,7 @@ void game::after_init() {
     setenv("NX_HUD_KEEP_ALPHA", "1", 0);
 #endif
     const LoadedModule* m = module_at(find_symbol("nnMain"));
+    log_fps_mode();  // before the hook: the line is wanted even when the setter is not found below
     if (m && (g_interval_setter = hook_function(m->base + 0x1048ee0, interval_setter_hook))) {
         g_main_base = m->base;
         if (std::getenv("NX_P5R_CULL_CHECK") && !(g_cull_job = hook_function(m->base + 0xab0f50, cull_job_hook)))

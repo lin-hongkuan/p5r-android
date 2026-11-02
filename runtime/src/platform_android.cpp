@@ -45,6 +45,7 @@
 #include <nx/runtime.h>
 
 #include "kernel.h"
+#include "perf_profile.h"
 #include "platform.h"
 #include "platform_android.h"
 #if NX_NCE
@@ -320,6 +321,11 @@ void screen_size(uint32_t& w, uint32_t& h) {
 
 // The render size: resolution=WxH if set, else the screen's size times the render scale (render_scale=0.5..1, or
 // the GPU's default), never taller than 1080 (the game's art is made for 720p/1080p; more only costs GPU time).
+//
+// The perf profile (perf_profile.h, docs/PERF-DESIGN.md §2/§3) adds two things, both off by default:
+//   render_height=720/1080/1440/1600  an explicit height instead of the render scale (the 2K/ultra presets)
+//   allow_over_1080=1                lifts the 1080 ceiling on the render-scale path
+// With neither written every branch below is what it was before (CONTRIBUTING-FORK.md §3.1): balance is upstream.
 void window_size(uint32_t& w, uint32_t& h) {
     uint32_t sw = 0, sh = 0;
     screen_size(sw, sh);
@@ -334,6 +340,8 @@ void window_size(uint32_t& w, uint32_t& h) {
         if (s == "480p" || s == "480") return 480;
         if (s == "720p" || s == "720") return 720;
         if (s == "1080p" || s == "1080") return 1080;
+        if (s == "1440p" || s == "1440") return 1440;  // the 2K presets (perf_profile.h)
+        if (s == "1600p" || s == "1600") return 1600;
         unsigned cw = 0, ch = 0;
         if (!s.empty() && std::sscanf(s.c_str(), "%ux%u", &cw, &ch) == 2 && ch) return ch;
         return 0;
@@ -342,6 +350,11 @@ void window_size(uint32_t& w, uint32_t& h) {
     uint32_t target_h = parse_target_h(nr);
     if (!target_h) target_h = parse_target_h(res);
     if (!target_h) target_h = parse_target_h(r);
+
+    const nx::perf::Profile& pf = nx::perf::profile();
+    // render_height from the perf profile: the same arithmetic as an explicit resolution, so a 1440 height gives the
+    // same width a resolution=1440p would (the game's art is 16:9; the screen's aspect decides the width).
+    if (!target_h) target_h = nx::perf::explicit_render_height(pf);
 
     if (target_h) {
         float scale = float(target_h) / float(sh);
@@ -352,7 +365,8 @@ void window_size(uint32_t& w, uint32_t& h) {
     std::string rs = setting("render_scale");
     float scale = rs.empty() ? default_render_scale() : std::strtof(rs.c_str(), nullptr);
     scale = std::clamp(scale, 0.25f, 1.0f);
-    scale = std::min(scale, 1080.0f / float(sh));
+    // The 1080 ceiling: lifted only when allow_over_1080 is written (perf_profile.h), 1080/sh as before otherwise.
+    scale = std::min(scale, nx::perf::render_scale_clamp(pf, sh));
     w = uint32_t(float(sw) * scale + 0.5f) & ~1u;
     h = uint32_t(float(sh) * scale + 0.5f) & ~1u;
 }
@@ -427,6 +441,90 @@ void* open_custom_vulkan() {
 }
 #endif
 
+namespace {
+
+// The ANativeWindow frame-rate API (Android 11+), looked up with dlsym so older versions just go without — the same
+// way perf_hint.cpp looks up APerformanceHint. Android 12+ has the change-strategy variant, which also switches when
+// the panel cannot do it seamlessly (60 <-> 90 Hz on some tablets is not).
+struct FrameRateApi {
+    using SetFrameRate = int32_t (*)(ANativeWindow*, float, int8_t);
+    using SetFrameRateStrategy = int32_t (*)(ANativeWindow*, float, int8_t, int8_t);
+    SetFrameRate set = nullptr;
+    SetFrameRateStrategy set_always = nullptr;
+};
+
+const FrameRateApi& frame_rate_api() {
+    static const FrameRateApi a = [] {
+        FrameRateApi x;
+        void* lib = dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL);
+        if (!lib) return x;
+        x.set = reinterpret_cast<FrameRateApi::SetFrameRate>(dlsym(lib, "ANativeWindow_setFrameRate"));
+        x.set_always = reinterpret_cast<FrameRateApi::SetFrameRateStrategy>(
+            dlsym(lib, "ANativeWindow_setFrameRateWithChangeStrategy"));
+        return x;
+    }();
+    return a;
+}
+
+// request_frame_rate below and apply_refresh_rate share this. `compatibility` is ANativeWindow's frame-rate
+// compatibility mode: 0 (ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT) for a game, 1
+// (..._FIXED_SOURCE) for fixed-pulldown video content, which is what AOSP documents it for. The strategy argument is
+// always 1 (CHANGE_FRAME_RATE_ALWAYS): switch even if the panel cannot do it seamlessly.
+// Returns the API's result, or -1 when neither symbol is there (Android 10 or older).
+int32_t request_hz(ANativeWindow* w, float hz, bool always, int8_t compatibility, bool* strategy_used) {
+    const FrameRateApi& api = frame_rate_api();
+    if (strategy_used) *strategy_used = false;
+    if (!w || hz <= 0) return -1;
+    if (api.set_always && always) {
+        if (strategy_used) *strategy_used = true;
+        return api.set_always(w, hz, compatibility, 1);
+    }
+    if (api.set) return api.set(w, hz, compatibility);
+    if (api.set_always) {  // Android 12+ always has both, but be safe
+        if (strategy_used) *strategy_used = true;
+        return api.set_always(w, hz, compatibility, 1);
+    }
+    return -1;
+}
+
+// The panel's refresh while the game shows (Android 11+): 60 Hz, the rate of our vsync event (hle_vi.cpp) and the
+// most the game presents. A 90 Hz panel (Lenovo Tab M11) showed a 30 fps frame for 3 refreshes or, when a present
+// landed next to a refresh, 2 or 4: uneven motion in films and cutscenes. NX_WINDOW_HZ=<hz>: another rate, 0: leave
+// the panel's own.
+void request_frame_rate(ANativeWindow* w) {
+    const char* e = getenv("NX_WINDOW_HZ");
+    const float hz = e ? float(std::atof(e)) : 60.0f;
+    if (!w || hz <= 0) return;
+    if (!frame_rate_api().set && !frame_rate_api().set_always)
+        return nx::log("android: no ANativeWindow_setFrameRate (Android 10 or older): the panel's own rate");
+    bool strategy = false;
+    // Upstream's path, unchanged: FIXED_SOURCE (1), as this call has always passed.
+    int32_t r = request_hz(w, hz, true, 1, &strategy);
+    nx::log("android: window frame rate %.0f Hz requested (%d%s)", double(hz), int(r), strategy ? ", even if not seamless" : "");
+}
+
+// The perf profile's refresh_hz (docs/PERF-DESIGN.md §2), requested again from the surface-creation path so the panel
+// is at the rate the present intervals are counted in. Written nothing (refresh_hz=0, the default): nothing at all,
+// and request_frame_rate above is the only caller — upstream behaviour, unchanged.
+void apply_refresh_rate(ANativeWindow* w) {
+    const nx::perf::Profile& pf = nx::perf::profile();
+    if (!pf.refresh_hz) return;  // follow the system: leave the panel alone, as upstream
+    if (!w) return;
+    if (!frame_rate_api().set && !frame_rate_api().set_always) {
+        nx::log("android: refresh_hz=%u not applied: no ANativeWindow_setFrameRate (Android 10 or older)", pf.refresh_hz);
+        return;
+    }
+    bool strategy = false;
+    // DEFAULT (0), not FIXED_SOURCE: AOSP documents FIXED_SOURCE for fixed-pulldown video, and a game is not that. This
+    // is deliberately not what request_frame_rate (upstream's NX_WINDOW_HZ) passes, whose behaviour must not change.
+    // Not verified on the OnePlus Pad 3 Pro: see docs/OPTIMIZATION-RESEARCH-EMULATORS.md item 7.
+    int32_t r = request_hz(w, float(pf.refresh_hz), true, 0, &strategy);
+    nx::log("android: refresh_hz=%u Hz requested for the surface (%d%s, %s)", pf.refresh_hz, int(r),
+            strategy ? ", even if not seamless" : "", r == 0 ? "accepted" : "refused, the panel keeps its rate");
+}
+
+}  // namespace
+
 void* vulkan_get_instance_proc_addr() {
     static void* gipa = []() -> void* {  // once: the custom driver is opened only once
         void* lib = nullptr;
@@ -446,6 +544,7 @@ int vulkan_create_surface(void* instance, void* native_window, uint64_t* surface
     ANativeWindow* win = static_cast<ANativeWindow*>(native_window);
     uint32_t rw = 0, rh = 0;
     window_size(rw, rh);
+    apply_refresh_rate(win);  // the perf profile's refresh_hz (docs/PERF-DESIGN.md §2); nothing when it is unset
     if (win && rw && rh) {
         int32_t cur_w = ANativeWindow_getWidth(win), cur_h = ANativeWindow_getHeight(win);
         bool portrait = cur_w < cur_h;
@@ -520,28 +619,6 @@ void game_thread(void*) {
 }
 
 void request_immersive();  // below: runs on the UI thread
-
-// The panel's refresh while the game shows (Android 11+): 60 Hz, the rate of our vsync event (hle_vi.cpp) and the
-// most the game presents. A 90 Hz panel (Lenovo Tab M11) showed a 30 fps frame for 3 refreshes or, when a present
-// landed next to a refresh, 2 or 4: uneven motion in films and cutscenes. NX_WINDOW_HZ=<hz>: another rate, 0: leave
-// the panel's own.
-void request_frame_rate(ANativeWindow* w) {
-    // Android 12+: the switch even when it is not seamless (60 <-> 90 Hz on the Tab M11 is not: the plain request
-    // was accepted and ignored); Android 11: the plain request.
-    using SetFrameRate = int32_t (*)(ANativeWindow*, float, int8_t);
-    using SetFrameRateStrategy = int32_t (*)(ANativeWindow*, float, int8_t, int8_t);
-    static void* lib = dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL);
-    static const auto set = reinterpret_cast<SetFrameRate>(lib ? dlsym(lib, "ANativeWindow_setFrameRate") : nullptr);
-    static const auto set_always = reinterpret_cast<SetFrameRateStrategy>(
-        lib ? dlsym(lib, "ANativeWindow_setFrameRateWithChangeStrategy") : nullptr);
-    const char* e = getenv("NX_WINDOW_HZ");
-    const float hz = e ? float(std::atof(e)) : 60.0f;
-    if (!w || hz <= 0) return;
-    if (!set && !set_always) return nx::log("android: no ANativeWindow_setFrameRate (Android 10 or older): the panel's own rate");
-    int32_t r = set_always ? set_always(w, hz, 1 /* COMPATIBILITY_FIXED_SOURCE */, 1 /* CHANGE_FRAME_RATE_ALWAYS */)
-                           : set(w, hz, 1);
-    nx::log("android: window frame rate %.0f Hz requested (%d%s)", double(hz), int(r), set_always ? ", even if not seamless" : "");
-}
 
 void on_cmd(android_app* app, int32_t cmd) {
     using namespace nx::plat;
@@ -733,6 +810,10 @@ extern "C" void android_main(android_app* app) {
         int zero = mallopt(M_BIONIC_ZERO_INIT, 0), decay = mallopt(M_DECAY_TIME, 1);
         nx::log("heap: zero-fill off (%d), page release delayed (%d)", zero, decay);
     }
+    // The perf profile (perf_profile.h): parsed once here, after g_root is known (config.txt) and after config.txt's
+    // NX_* lines became environment variables, and logged so a player's logcat shows what took effect. Everything it
+    // resolves defaults to upstream's behaviour (docs/PERF-DESIGN.md §2), so this changes nothing on its own.
+    nx::perf::profile();
     start_memory_guard();
     gpu_turbo();
     app->onAppCmd = on_cmd;

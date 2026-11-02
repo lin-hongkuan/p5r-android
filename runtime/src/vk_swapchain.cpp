@@ -10,10 +10,83 @@
 
 #include <nx/game.h>
 
+#include "perf_profile.h"
 #include "vk_bridge_shared.h"
 #include "vk_present.h"
 
 namespace nx::vk {
+
+const char* present_mode_name(VkPresentModeKHR m) {
+    switch (m) {
+        case VK_PRESENT_MODE_IMMEDIATE_KHR: return "IMMEDIATE";
+        case VK_PRESENT_MODE_MAILBOX_KHR: return "MAILBOX";
+        case VK_PRESENT_MODE_FIFO_KHR: return "FIFO";
+        case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "FIFO_RELAXED";
+        case VK_PRESENT_MODE_SHARED_DEMAND_REFRESH_KHR: return "SHARED_DEMAND_REFRESH";
+        case VK_PRESENT_MODE_SHARED_CONTINUOUS_REFRESH_KHR: return "SHARED_CONTINUOUS_REFRESH";
+        default: return "?";
+    }
+}
+
+// The one place a present mode is decided, for both swapchain paths: this file (a game that calls Vulkan itself) and
+// nvn_vk.cpp::make_swapchain (NVN's own swapchain, which is what P5R uses). Whoever calls it passes the list it would
+// have picked before the perf profile existed (`auto_pref`); with present_mode unset that list is walked exactly as
+// before, so the default is upstream's choice byte for byte. An explicit `present_mode` switch replaces that list with
+// the mode asked for, and the safe fallback chain below: the requested mode if the surface offers it, else the next
+// one down, and FIFO last (the only mode a surface must offer — a driver without it is broken either way, and upstream
+// ended on FIFO too). Logs what it actually chose, every time a swapchain is made.
+VkPresentModeKHR resolve_present_mode(VkPhysicalDevice pd, VkSurfaceKHR surface, const VkPresentModeKHR* auto_pref,
+                                      size_t auto_count, const char* who) {
+    uint32_t offered_n = 0;
+    if (pd && surface) p_vkGetPhysicalDeviceSurfacePresentModesKHR(pd, surface, &offered_n, nullptr);
+    std::vector<VkPresentModeKHR> offered(offered_n);
+    if (offered_n) p_vkGetPhysicalDeviceSurfacePresentModesKHR(pd, surface, &offered_n, offered.data());
+    offered.resize(offered_n);
+    auto has = [&](VkPresentModeKHR m) { return std::find(offered.begin(), offered.end(), m) != offered.end(); };
+
+    const nx::perf::Profile& pf = nx::perf::profile();
+    VkPresentModeKHR want[3];
+    size_t n = 0;
+    switch (pf.present_mode) {
+        case nx::perf::PresentMode::Fifo:  // FIFO always: vsync-locked, no tearing, the lowest latency jitter
+            want[n++] = VK_PRESENT_MODE_FIFO_KHR;
+            break;
+        case nx::perf::PresentMode::Mailbox:  // never blocks, newest frame at each refresh; IMMEDIATE if no mailbox
+            want[n++] = VK_PRESENT_MODE_MAILBOX_KHR;
+            want[n++] = VK_PRESENT_MODE_IMMEDIATE_KHR;
+            break;
+        case nx::perf::PresentMode::Immediate:  // lowest latency, may tear; MAILBOX before falling back to vsync
+            want[n++] = VK_PRESENT_MODE_IMMEDIATE_KHR;
+            want[n++] = VK_PRESENT_MODE_MAILBOX_KHR;
+            break;
+        case nx::perf::PresentMode::Auto:  // the caller's own upstream choice, unchanged
+            for (size_t k = 0; k < auto_count && k < 3; k++) want[n++] = auto_pref[k];
+            break;
+    }
+    VkPresentModeKHR chosen = VK_PRESENT_MODE_FIFO_KHR;
+    for (size_t k = 0; k < n; k++)
+        if (has(want[k])) {
+            chosen = want[k];
+            break;
+        }
+    // Logcat noise: a device that backgrounds often re-makes its swapchain every time, so the full detail is printed
+    // on the first call for a given `who` and whenever the chosen mode actually changes; every other call gets one
+    // short line. A log nobody can read is a log nobody checks (and "no bugs" quietly becomes "untested").
+    static std::unordered_map<std::string, VkPresentModeKHR> g_last_mode;
+    auto it = g_last_mode.find(who);
+    const bool first = it == g_last_mode.end(), changed = !first && it->second != chosen;
+    g_last_mode[who] = chosen;
+    if (first || changed) {
+        log("vk: %s: present mode %s (perf present_mode %s%s; surface offers %u modes%s)%s", who,
+            present_mode_name(chosen), nx::perf::present_mode_name(pf.present_mode),
+            pf.present_mode == nx::perf::PresentMode::Auto ? " = upstream choice" : "", offered_n,
+            chosen == (n ? want[0] : VK_PRESENT_MODE_FIFO_KHR) ? "" : " (asked for, not offered: fell back)",
+            changed ? " [changed]" : "");
+    } else {
+        log("vk: %s: present mode %s", who, present_mode_name(chosen));
+    }
+    return chosen;
+}
 
 namespace {
 
@@ -143,11 +216,10 @@ void adapt_to_surface(VkSwapchainCreateInfoKHR& ci) {
     if (!(caps.supportedTransforms & ci.preTransform)) ci.preTransform = caps.currentTransform;
     ci.minImageCount = std::max(ci.minImageCount, caps.minImageCount);
     if (caps.maxImageCount) ci.minImageCount = std::min(ci.minImageCount, caps.maxImageCount);
-    uint32_t nm = 0;
-    p_vkGetPhysicalDeviceSurfacePresentModesKHR(bridge::physical(), ci.surface, &nm, nullptr);
-    std::vector<VkPresentModeKHR> modes(nm);
-    p_vkGetPhysicalDeviceSurfacePresentModesKHR(bridge::physical(), ci.surface, &nm, modes.data());
-    if (std::find(modes.begin(), modes.end(), ci.presentMode) == modes.end()) ci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    // The present mode the game asked for, kept when the surface offers it (the Switch driver accepts more than every
+    // host surface does). An explicit present_mode switch overrides it; otherwise this is upstream's rule unchanged.
+    const VkPresentModeKHR asked = ci.presentMode;
+    ci.presentMode = resolve_present_mode(bridge::physical(), ci.surface, &asked, 1, "game swapchain");
 }
 
 void get_host_images(SwapchainInfo& s) {

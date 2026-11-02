@@ -50,7 +50,7 @@ config.txt NX_RENDER_RES ──→ svc_am.cpp GetDefaultDisplayResolution（游�
 | config.txt key | 环境变量 | 取值 | 默认 | 作用 |
 |---|---|---|---|---|
 | `perf_mode` | `NX_PERF_MODE` | `balance` / `quality` / `2k` / `2k90` / `ultra` / `custom` | `balance` | 预设组合，见 §3 |
-| `fps_mode` | `NX_FPS_MODE` | `30` / `60` / `90` / `120` / `0`(=无上限) | `60` | 目标帧率档 |
+| `fps_mode` | `NX_FPS_MODE` | `30` / `45` / `60` / `90` / `120` / `0`(=无上限) | **未设置**（沿用上游 `NX_FPS_CAP` 的 30） | 目标帧率档 |
 | `refresh_hz` | `NX_REFRESH_HZ` | `0`(跟随系统) / `60` / `90` / `120` / `144` | `0` | 请求的显示刷新率 |
 | `render_height` | `NX_RENDER_HEIGHT` | `720` / `1080` / `1440` / `1600` / `0`(原生) | `0` | 渲染高度档（0=按 perf_mode 推导） |
 | `render_scale` | — | `0.25`..`1.0` | 按 GPU | 渲染缩放（上游已有，保留） |
@@ -76,6 +76,67 @@ config.txt NX_RENDER_RES ──→ svc_am.cpp GetDefaultDisplayResolution（游�
 | `custom` | 由上面各项单独决定 | | | | 手调 |
 
 `perf_mode` 只提供默认值：任何显式写出的单项 key 都**覆盖**预设值（覆盖顺序：单项 > 预设 > 上游默认）。
+
+### 3.1 fps_mode 与 refresh_hz 的耦合规则（重要）
+
+P5R 的 present interval 是**整数** vsync 数（1..4），并且游戏逻辑按 `1/target` 步进（§1.1）。因此
+**"帧率 = 刷新率 / interval"** 是唯一不会让游戏变速的表达方式。由此定下三条硬规则：
+
+1. **显式设 `fps_mode=90` 或 `120` 而未设 `refresh_hz` 时，`refresh_hz` 自动取该帧率（90/120）。**
+   理由：用户选"90帧"的语义就是"跑 90 帧"，而面板支持 90/120/144Hz，不请求刷新率就只能跑 60，
+   等于这个选项是空操作——这是必须避免的坑（frame-pacing 的评审发现）。
+2. **`fps > refresh` 时钳制 `fps = refresh` 并打警告**，绝不通过把 interval 设成 0 去"凑"高帧率
+   （那会让 vsync 单元与游戏步进脱钩，导致慢放或加速）。
+3. **`fps_mode=30/60` 不自动改刷新率**（跟随系统），因为 60Hz 面板上 30/60 是原生整数倍，
+   无需请求高刷，避免无谓功耗与发热（§4.5 的首要目标）。
+
+对应的 `present_interval = max(1, round(refresh_hz / fps))` 取值表：
+
+| fps_mode | refresh_hz（自动） | interval | 实际帧率 | 游戏速度 |
+|---|---|---|---|---|
+| 30 | 0(跟随) | 2 | 30 | 正确 |
+| 60 | 0(跟随) | 1 | 60 | 正确 |
+| 90 | 90 | 1 | 90 | 正确（实验） |
+| 120 | 120 | 1 | 120 | 正确（实验） |
+| 0(无上限) | 0(跟随) | 1 | 由 GPU 决定 | **可能错误**，仅调试用 |
+
+### 3.2 `NX_FPS_CAP` 与 `fps_mode` 的冲突规则（血泪教训）
+
+上游 `NX_FPS_CAP` 的语义是 **`>= 60 ? 60 : 30`**（`games/p5r/game.cpp` 原实现），即它**只能表达 30 或 60**。
+且它**优先级高于 `fps_mode`**（谁让它是上游开关）。
+
+因此：
+
+> **禁止在 90/120/无上限档位下写 `NX_FPS_CAP`。**
+> 写了 `NX_FPS_CAP=90` 会被钳成 **60**，使"2K90"预设实际只跑 60fps —— 启动器 UI 显示 90、实际 60，
+> 这是最坏的一类 bug（用户以为生效了）。
+
+规则：
+- `fps_mode=30` → 写 `NX_FPS_CAP=30`（上游语义一致）
+- `fps_mode=60` → 写 `NX_FPS_CAP=60`（上游语义一致）
+- `fps_mode=90/120/0` → **删除 `NX_FPS_CAP`**，只留 `fps_mode`
+- 读旧配置时 `NX_FPS_CAP=60` → 迁移为 `fps_mode=60`；`NX_FPS_CAP=30` → `fps_mode=30`
+
+此规则必须被 `tools/verify_perf_settings.ps1` 与真机验证双向覆盖。
+
+### 3.3 整数 interval 的固有局限（必须对用户说明）
+
+present interval 只能是整数 vsync 数，所以 **"帧率 = 刷新率 ÷ 整数"** 才可达：
+
+| 刷新率 | 可达帧率（interval 1/2/3/4） |
+|---|---|
+| 60 Hz | 60 / 30 / 20 / 15 |
+| 90 Hz | 90 / 45 / 30 / 22.5 |
+| 120 Hz | 120 / 60 / 40 / 30 |
+| 144 Hz | **144 / 72 / 48 / 36** |
+
+**推论（写进用户文档与启动器提示）**：在 144Hz 面板上若把 `refresh_hz` 钉成 144，则 `fps_mode=90` 只能得到 **72fps**，
+因为 144/90 = 1.6 取不到整。所以：
+
+- **"90 帧"必须靠把面板切到 90Hz 来实现**（§3.1 的自动推导正是为此）。
+- 若设备/系统拒绝了 90Hz 请求（**未验证**：一加平板 3 Pro 是否暴露 90Hz `Display.Mode` 需真机确认），
+  实际会落到 72fps 或 60fps，**必须在 logcat 里给出 `WARNING:` 行**说明被钳制，而不是静默降级。
+- `fps_clamped` 一旦为真，`hle_vi.cpp` 会打印可 grep 的警告。这是对抗"选项看起来生效了其实没有"的关键防线。
 
 ## 4. 各模块改动点
 

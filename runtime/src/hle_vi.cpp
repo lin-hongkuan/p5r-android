@@ -9,19 +9,57 @@
 #include <nx/runtime.h>
 
 #include "kernel.h"
+#include "perf_profile.h"
 #include "platform.h"
 
 namespace nx {
 
-// NX_DISPLAY_HZ=<hz> (30..360; study fps-unlock-1710): the host vsync event and the present unit run at <hz> instead of
-// 60. Experimental: Wonder's logic steps one 1/60 s unit per present interval, so above 60 the game runs fast.
+// The host's vsync unit: the display period the vsync event and the present pacing are counted in. Three sources, in
+// this order:
+//  1. NX_DISPLAY_HZ=<hz> (30..360; study fps-unlock-1710): the pre-existing switch, kept first so a study run behaves
+//     exactly as it did before the perf profile existed (docs/nvn/studies/fps-unlock-1710.md).
+//  2. The perf profile's vsync rate (perf_profile.h, docs/PERF-DESIGN.md §2/§3): the requested refresh_hz when one was
+//     asked for, else 60 — what upstream ran at. The fps 档位 is reached through the present interval instead
+//     (nvn_queue.cpp: interval * display_period_ns()), so 30 fps on a 60 Hz unit is interval 2, as upstream.
+//  3. 60 Hz: the upstream default, byte for byte (16'666'667 ns, the literal upstream hard-coded).
+//
+// A target above the unit is deliberately NOT reached by raising the unit here: Wonder's logic steps one unit per
+// present interval, so a 60 Hz unit run at 90 Hz would speed the game up 1.5x (PERF-DESIGN §1.1). Only an explicit
+// refresh_hz moves the unit, and that is the user asking for it.
 uint64_t display_period_ns() {
     static const uint64_t p = [] {
-        const char* e = std::getenv("NX_DISPLAY_HZ");
-        int hz = e ? std::atoi(e) : 0;
-        if (hz < 30 || hz > 360) return uint64_t(16'666'667);
-        log("vi: display at %d Hz (NX_DISPLAY_HZ)", hz);
-        return uint64_t(1'000'000'000ull / uint64_t(hz));
+        // NX_DISPLAY_HZ first: an explicit study switch outranks the profile, as it did before the profile existed.
+        if (const char* e = std::getenv("NX_DISPLAY_HZ")) {
+            int hz = std::atoi(e);
+            if (hz >= 30 && hz <= 360) {
+                log("vi: display at %d Hz (NX_DISPLAY_HZ)", hz);
+                return uint64_t(1'000'000'000ull / uint64_t(hz));
+            }
+        }
+        // profile() reads config.txt once and caches it. The vsync thread starts from GetDisplayVsyncEvent, long after
+        // the host set data_root (android_main / main), so the first call here sees the real config.
+        const nx::perf::Profile& pf = nx::perf::profile();
+        uint32_t hz = nx::perf::effective_refresh_hz(pf);  // refresh_hz when asked for, else 60 (upstream)
+        if (hz < 30 || hz > 360) hz = 60;  // a nonsense rate paces at the upstream one
+        // Byte-identical to upstream at 60: the literal, not 1e9/60 (which truncates to 16'666'666).
+        const uint64_t period = hz == 60 ? uint64_t(16'666'667) : uint64_t(1'000'000'000ull / uint64_t(hz));
+        log("vi: display at %u Hz (%s; fps_mode %s), present unit %.3f ms", hz,
+            pf.refresh_configured ? "refresh_hz" : "perf profile default = upstream 60", nx::perf::fps_name(pf.fps_mode),
+            double(period) / 1e6);
+        // perf_profile.cpp resolves the impossible combinations before we see them, so a target above the unit can no
+        // longer reach this point (fps_clamped below is what reports it). Kept as a guard: if the resolution ever lets
+        // one through, the pace is silently the unit's rate and that must not pass unlogged.
+        if (pf.fps > 0 && uint32_t(pf.fps) > hz)
+            log("vi: fps_mode %s is above the %u Hz unit: the present interval cannot go below 1, so the pace stays at "
+                "%u fps. Set refresh_hz for a rate above 60.", nx::perf::fps_name(pf.fps_mode), hz, hz);
+        // The user asked for a frame rate the panel cannot show (fps_mode=120 with refresh_hz=60): perf_profile.cpp
+        // lowered the target to the rate and set fps_clamped. Warn loudly — the setting silently did not do what the
+        // launcher promised, and that is exactly the kind of thing a user reports as "the option does nothing".
+        if (pf.fps_clamped)
+            log("vi: WARNING: fps_mode was lowered to the panel's %u Hz (asked for a rate the display cannot show). "
+                "The setting is clamped; raise refresh_hz or pick a rate the panel supports (%u Hz here).",
+                hz, hz);
+        return period;
     }();
     return p;
 }

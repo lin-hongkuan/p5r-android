@@ -22,6 +22,7 @@
 
 #include "nvn_vk.h"
 #include "platform.h"
+#include "vk_bridge_shared.h"  // resolve_present_mode: the one present-mode decision, shared with vk_swapchain.cpp
 
 #include <nx/game.h>
 
@@ -430,24 +431,17 @@ bool make_swapchain() {
         extent.width, extent.height, caps.currentExtent.width, caps.currentExtent.height, unsigned(caps.currentTransform),
         caps.supportedTransforms, unsigned(ci.compositeAlpha), caps.supportedCompositeAlpha,
         caps.supportedUsageFlags);
-    // The game paces itself on its vsync event (hle_vi.cpp, 60 Hz): a FIFO present also waited for the display's own
-    // refresh, two clocks drifting against each other (stutter near 60 fps, docs/nvn/DEBUG.md #33). MAILBOX never
-    // blocks and shows the newest frame at each refresh; else IMMEDIATE (MoltenVK: no display sync in the Metal
-    // layer, the macOS compositor still shows whole frames at its refresh), FIFO last. NX_FIFO=1: FIFO (DEBUG.md #62).
-    ci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
-    uint32_t modes_n = 0;
-    p_vkGetPhysicalDeviceSurfacePresentModesKHR(g_physical, g_surface, &modes_n, nullptr);
-    std::vector<VkPresentModeKHR> modes(modes_n);
-    p_vkGetPhysicalDeviceSurfacePresentModesKHR(g_physical, g_surface, &modes_n, modes.data());
-    auto has = [&](VkPresentModeKHR m) { return std::find(modes.begin(), modes.end(), m) != modes.end(); };
-    if (!std::getenv("NX_FIFO")) {
-        if (has(VK_PRESENT_MODE_MAILBOX_KHR))
-            ci.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
-        else if (has(VK_PRESENT_MODE_IMMEDIATE_KHR))
-            ci.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
-    }
-    static const char* const mode_names[] = {"IMMEDIATE", "MAILBOX", "FIFO", "FIFO_RELAXED"};
-    log("nvn/vk: present mode %s (%u modes offered)", ci.presentMode <= 3 ? mode_names[ci.presentMode] : "?", modes_n);
+    // The game paces itself on its vsync event (hle_vi.cpp): a FIFO present also waited for the display's own refresh,
+    // two clocks drifting against each other (stutter near 60 fps, docs/nvn/DEBUG.md #33). MAILBOX never blocks and
+    // shows the newest frame at each refresh; else IMMEDIATE (MoltenVK: no display sync in the Metal layer, the macOS
+    // compositor still shows whole frames at its refresh), FIFO last. NX_FIFO=1: FIFO (DEBUG.md #62).
+    // That list is `auto_pref`: the perf profile's present_mode `auto` walks it unchanged, so the default is the
+    // upstream choice exactly. The decision itself lives in vk_swapchain.cpp::resolve_present_mode, shared with the
+    // other swapchain path so the two can never disagree.
+    static const VkPresentModeKHR auto_pref[3] = {
+        std::getenv("NX_FIFO") ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_MAILBOX_KHR,  // NX_FIFO keeps upstream #62
+        VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR};
+    ci.presentMode = resolve_present_mode(g_physical, g_surface, auto_pref, std::getenv("NX_FIFO") ? 1 : 3, "nvn swapchain");
     ci.clipped = VK_TRUE;
     if (!check(p_vkCreateSwapchainKHR(g_device, &ci, nullptr, &g_swapchain), "vkCreateSwapchainKHR")) return false;
     uint32_t n = 0;

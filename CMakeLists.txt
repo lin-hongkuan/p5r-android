@@ -60,6 +60,16 @@ if(NX_TESTS AND NOT ANDROID)
         target_link_libraries(memguard_test PRIVATE psapi)
         add_test(NAME memguard COMMAND memguard_test)
     endif()
+    # The performance profile (runtime/src/perf_profile.cpp, docs/PERF-DESIGN.md §2/§3): pure parsing, no Android, no
+    # Vulkan, no SDL3. NX_PERF_STANDALONE drops its platform.h include so it links with nothing but the C library.
+    add_executable(perf_profile_test tests/perf_profile_test.cpp runtime/src/perf_profile.cpp)
+    target_compile_definitions(perf_profile_test PRIVATE NX_PERF_STANDALONE)
+    target_include_directories(perf_profile_test PRIVATE runtime/include runtime/src)
+    add_test(NAME perf_profile COMMAND perf_profile_test)
+    # The thermal guard (runtime/src/perf_thermal.cpp): no platform dependency, so no NX_PERF_STANDALONE.
+    add_executable(perf_thermal_test tests/perf_thermal_test.cpp runtime/src/perf_thermal.cpp)
+    target_include_directories(perf_thermal_test PRIVATE runtime/include runtime/src)
+    add_test(NAME perf_thermal COMMAND perf_thermal_test)
 endif()
 
 # Native execution (runtime/src/nce): the game's own AArch64 code from the player's exefs runs on the host CPU, so the
@@ -130,6 +140,7 @@ set(NX_RUNTIME_SOURCES
     runtime/src/input_script.cpp
     runtime/src/touch_layout.cpp
     runtime/src/perf_hint.cpp
+    runtime/src/perf_profile.cpp
     runtime/src/frame_stats.cpp
     runtime/src/write_watch.cpp
     runtime/src/nvn/nvn_caps.cpp

@@ -24,6 +24,7 @@
 
 #include "nvn.h"
 #include "nvn_ultrawide.h"
+#include "perf_profile.h"
 #include "platform.h"
 
 namespace nx {
@@ -580,21 +581,42 @@ void WindowSetPresentInterval(CPU& c) {
 }
 
 // (NVNqueue*, NVNwindow*, int textureIndex)
-// Frame pacing: a present returns no earlier than the window's present interval (in 60 Hz vsyncs) after the previous
-// one. On the Switch the texture-available sync of the next acquire does this; ours is signaled at once, so without
-// it the game runs as fast as it can once it is faster than 60 fps. A late frame is not snapped to the next vsync
-// (an 18 ms frame stays 18 ms, not 33). NX_NO_FRAME_LIMIT=1: unpaced.
+// Frame pacing: a present returns no earlier than the window's present interval (in vsyncs of display_period_ns())
+// after the previous one. On the Switch the texture-available sync of the next acquire does this; ours is signaled at
+// once, so without it the game runs as fast as it can once it is faster than 60 fps. A late frame is not snapped to
+// the next vsync (an 18 ms frame stays 18 ms, not 33). NX_NO_FRAME_LIMIT=1: unpaced (upstream switch, still exactly
+// the same test: the variable being present at all).
+//
+// The step is interval * display_period_ns() — display_period_ns() is the perf profile's vsync rate (hle_vi.cpp), so
+// refresh_hz 90/120/144 and a target above 60 change the step through the unit, and the fps 档位 changes it through
+// the interval the game is given (games/p5r/game.cpp). The perf profile's uncap_present (fps_mode 0 or
+// NX_NO_FRAME_LIMIT) turns the pacing off altogether: the present returns as soon as its work is queued.
 void pace_present(int interval) {
-    static const bool off = std::getenv("NX_NO_FRAME_LIMIT") != nullptr;
+    static const bool off = [] {
+        const nx::perf::Profile& pf = nx::perf::profile();
+        // upstream: NX_NO_FRAME_LIMIT present at all, any value. The profile already ORs that in; the getenv is kept
+        // so this stays true even if the profile's parsing of the switch ever drifts.
+        const bool o = pf.uncap_present || std::getenv("NX_NO_FRAME_LIMIT") != nullptr;
+        if (o)
+            log("nvn: present pacing off (fps_mode %s%s)", nx::perf::fps_name(pf.fps_mode),
+                pf.uncap_present && std::getenv("NX_NO_FRAME_LIMIT") ? ", NX_NO_FRAME_LIMIT" : "");
+        return o;
+    }();
     static uint64_t next = 0;
     if (off || interval <= 0) return;
+    static const uint64_t unit = [] {
+        const uint64_t p = display_period_ns();  // one log line already (hle_vi.cpp); this one is the pacing step
+        log("nvn: present pacing step = interval * %.3f ms (vsync unit; fps_mode %s, interval 1 = %.1f fps)",
+            double(p) / 1e6, nx::perf::fps_name(nx::perf::profile().fps_mode), p ? 1e9 / double(p) : 0.0);
+        return p;
+    }();
     uint64_t now = plat::monotonic_ns();
     if (next > now) plat::sleep_ns(next - now), now = plat::monotonic_ns();
     static uint64_t presents = 0, at2 = 0;  // how often the game asks for 30 fps (interval 2), per 600 presents
     at2 += interval >= 2;
     if (++presents % 600 == 0)
         log("nvn: %llu of the last 600 presents at interval >= 2", (unsigned long long)at2), at2 = 0, log_wait_sites();
-    uint64_t period = uint64_t(interval) * display_period_ns();
+    uint64_t period = uint64_t(interval) * unit;
     next = (next > now || now - next < period ? next : now) + period;
 }
 

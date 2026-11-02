@@ -56,7 +56,13 @@ import java.util.Map;
  *   interface   at 720p (NX_HUD_1080=0, default: faster) or, in 720p, drawn at 1080p (NX_HUD_1080=1: sharper text)
  *   graphics    low (default), medium or high: textures one mip smaller (NX_LOD_BIAS=1), half a mip, or the game's
  *               own. (A lower render resolution needs the engine's target sizes: games/p5r/PROGRESO.md.)
- *   frame rate  30 (NX_FPS_CAP=30, default) or 60 (NX_FPS_CAP=60: games/p5r/game.cpp patches the engine's interval)
+ *   frame rate  fps_mode: 30 (default: upstream wrote NX_FPS_CAP=30), 60, 90, 120 or 0 (no limit). NX_FPS_CAP is kept in
+ *               step for the game's own interval patch (games/p5r/game.cpp); 90/120 are experimental and the launcher
+ *               warns that the game may run at the wrong speed (docs/PERF-DESIGN.md §1.1)
+ *   performance perf_mode (balance/quality/2k/2k90/ultra/custom), render_height (0/720/1080/1440/1600: over 1080 also
+ *               writes allow_over_1080=1), refresh_hz (0/60/90/120/144) and present_mode (auto/fifo/mailbox/immediate),
+ *               all resolved by runtime/src/perf_profile.h (docs/PERF-DESIGN.md §2-§3). A one-tap 2K90 preset at the top
+ *               writes the whole recommended combination for the OnePlus Pad 3 Pro.
  *   FPS counter off (default) or on (NX_SHOW_FPS)
  *   shadows     off (NX_SHADOWS=0, default: the shadow maps are not drawn, ~9% of the GPU on the 3D title) or on
  *   on-screen controls on (default) or off (NX_TOUCH_SHOW), their size (NX_TOUCH_SIZE) and opacity (NX_TOUCH_OPACITY),
@@ -93,6 +99,7 @@ public class Launcher extends Activity {
     final List<Option> options = new ArrayList<>();
     final Map<String, String> config = new LinkedHashMap<>();
     TextView status;
+    TextView fpsWarning;
     Button play;
     static final int PICK_ZIP = 1, PICK_FOLDER = 2, PICK_GAME = 3, PICK_KEYS = 4, PICK_ICON = 5, PREPARE = 6, PICK_CPK = 7, PICK_DRIVER = 8;
 
@@ -322,8 +329,51 @@ public class Launcher extends Activity {
                 new String[] {"720p (faster)", "1080p (sharp text)"}, 0));
         options.add(new Option("GRAPHICS", "Gráficos", "Graphics", new String[] {"low", "medium", "high"},
                 new String[] {"Bajos", "Medios", "Altos"}, new String[] {"Low", "Medium", "High"}, 0));
-        options.add(new Option("NX_FPS_CAP", "Fotogramas por segundo", "Frame rate", new String[] {"30", "60"},
-                new String[] {"30 fps", "60 fps (experimental)"}, new String[] {"30 fps", "60 fps (experimental)"}, 0));
+        // The performance profile (docs/PERF-DESIGN.md §2-§3): the preset first, then the single switches it fills in.
+        options.add(new Option("perf_mode", "Modo de rendimiento", "Performance mode",
+                new String[] {"balance", "quality", "2k", "2k90", "ultra", "custom"},
+                new String[] {"Equilibrado (predeterminado)", "Calidad 1080p60", "2K 60", "2K 90 (experimental)",
+                        "Ultra 2.5K 120 (experimental)", "Personalizado"},
+                new String[] {"Balanced (default)", "Quality 1080p60", "2K 60", "2K 90 (experimental)",
+                        "Ultra 2.5K 120 (experimental)", "Custom"}, 0));
+        // save() mirrors only 30/60 into NX_FPS_CAP and deletes it for 90/120/0: that switch can only express 30 or
+        // 60 and wins over fps_mode, so writing 90 there would silently run at 60 (docs/PERF-DESIGN.md §3.2).
+        options.add(new Option("fps_mode", "Fotogramas por segundo", "Frame rate",
+                new String[] {"30", "60", "90", "120", "0"},
+                new String[] {"30 fps", "60 fps (experimental)", "90 fps (experimental)", "120 fps (experimental)",
+                        "Sin límite"},
+                new String[] {"30 fps", "60 fps (experimental)", "90 fps (experimental)", "120 fps (experimental)",
+                        "No limit"}, 0));
+        // Over 1080 also writes allow_over_1080=1 (window_size() clamps the render scale to 1080 without it).
+        options.add(new Option("render_height", "Altura de renderizado", "Render height",
+                new String[] {"0", "720", "1080", "1440", "1600"},
+                new String[] {"Automática (según el modo)", "720p", "1080p", "1440p (2K)", "1600p (2.5K)"},
+                new String[] {"Automatic (follows the mode)", "720p", "1080p", "1440p (2K)", "1600p (2.5K)"}, 0));
+        options.add(new Option("refresh_hz", "Frecuencia de actualización", "Refresh rate",
+                new String[] {"0", "60", "90", "120", "144"},
+                new String[] {"Seguir al sistema", "60 Hz", "90 Hz", "120 Hz", "144 Hz"},
+                new String[] {"Follow the system", "60 Hz", "90 Hz", "120 Hz", "144 Hz"}, 0));
+        options.add(new Option("present_mode", "Modo de presentación", "Present mode",
+                new String[] {"auto", "fifo", "mailbox", "immediate"},
+                new String[] {"Automático", "FIFO (vsync)", "Mailbox (baja latencia)", "Immediate (sin vsync)"},
+                new String[] {"Automatic", "FIFO (vsync)", "Mailbox (low latency)", "Immediate (no vsync)"}, 0));
+        // §4.5: heat is the user's main worry, so the guard is on by default and cannot be fully turned off.
+        options.add(new Option("thermal_guard", "Protección térmica", "Thermal guard",
+                new String[] {"1", "2", "0"},
+                new String[] {"Estándar (recomendada, no se puede desactivar del todo)",
+                        "Agresiva (más fría, baja antes el rendimiento)",
+                        "Solo registrar (pruebas: NO protege del calor)"},
+                new String[] {"Standard (recommended, cannot be fully disabled)",
+                        "Aggressive (cooler, backs off sooner)",
+                        "Log only (testing: does NOT protect against heat)"}, 0));
+        options.add(new Option("dyn_res", "Resolución dinámica", "Dynamic resolution",
+                new String[] {"1", "0"},
+                new String[] {"Activada (baja la resolución si hace falta)", "Desactivada"},
+                new String[] {"On (lowers the resolution when needed)", "Off"}, 0));
+        options.add(new Option("dyn_res_min", "Altura mínima de renderizado", "Min render height",
+                new String[] {"1080", "900", "720"},
+                new String[] {"1080p", "900p", "720p"},
+                new String[] {"1080p", "900p", "720p"}, 0));
         options.add(new Option("NX_SHADOWS", "Sombras", "Shadows", new String[] {"0", "1"},
                 new String[] {"Desactivadas", "Activadas"}, new String[] {"Off", "On"}, 0));
         options.add(new Option("NX_SHOW_FPS", "Contador de FPS", "FPS counter", new String[] {"0", "1"},
@@ -385,6 +435,26 @@ public class Launcher extends Activity {
         status.setPadding(0, dp(6), 0, dp(14));
         root.addView(status);
 
+        // One tap for the OnePlus Pad 3 Pro's recommended combination (docs/PERF-DESIGN.md §3): the whole preset at once.
+        Button preset = new Button(this);
+        preset.setText(t("Un toque: 2K90 (recomendado para OnePlus Pad 3 Pro)",
+                "One-tap 2K90 (recommended for the OnePlus Pad 3 Pro)"));
+        preset.setAllCaps(false);
+        preset.setTextSize(17);
+        preset.setBackgroundColor(Color.rgb(230, 0, 18));
+        preset.setTextColor(Color.WHITE);
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        plp.topMargin = dp(4);
+        plp.bottomMargin = dp(12);
+        root.addView(preset, plp);
+        preset.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                askPreset();
+            }
+        });
+
         addRow(root, t("Archivo del juego (.nsp / .xci)", "Game file (.nsp / .xci)"), t("Elegir", "Choose"),
                 new View.OnClickListener() {
                     @Override
@@ -425,10 +495,20 @@ public class Launcher extends Activity {
                     o.pick = (o.pick + 1) % o.values.length;
                     value.setText(label(o));
                     save();
+                    updateFpsWarning();
                 }
             });
             value.setTag(o);
             root.addView(row);
+            // Above 60 the game's logic steps faster than the engine was tuned for: say so under the frame rate row
+            // (docs/PERF-DESIGN.md §1.1, §5). Shown or hidden by refresh() and by the button itself.
+            if ("fps_mode".equals(o.key)) {
+                fpsWarning = new TextView(this);
+                fpsWarning.setTextColor(Color.rgb(255, 176, 0));
+                fpsWarning.setTextSize(13);
+                fpsWarning.setPadding(0, 0, 0, dp(8));
+                root.addView(fpsWarning);
+            }
         }
 
         LinearLayout edit = new LinearLayout(this);
@@ -643,10 +723,18 @@ public class Launcher extends Activity {
                     else v = "720p";
                 }
             }
+            // A config.txt from the upstream launcher has NX_FPS_CAP but no fps_mode: migrate it (§3.2).
+            // NX_FPS_CAP only ever meant 30 or 60, so the mapping is exact; anything else falls back to the 30 default.
+            if ("fps_mode".equals(o.key) && v == null) {
+                String cap = config.get("NX_FPS_CAP");
+                if ("60".equals(cap)) v = "60";
+                else if ("30".equals(cap)) v = "30";
+            }
             for (int k = 0; v != null && k < o.values.length; k++)
                 if (o.values[k].equals(v)) o.pick = k;
         }
         updateButtons(getWindow().getDecorView());
+        updateFpsWarning();
         if (!hasAccess()) {
             status.setText(t("Hace falta el permiso de acceso a todos los archivos para leer los datos del juego.",
                     "All-files access is needed to read the game data."));
@@ -693,6 +781,104 @@ public class Launcher extends Activity {
 
     void tell(String title, String message) {
         new AlertDialog.Builder(this).setTitle(title).setMessage(message).setPositiveButton("OK", null).show();
+    }
+
+    // ---- performance profile (docs/PERF-DESIGN.md §2-§3) ---------------------------------------------------------
+
+    // The one-tap preset: the whole recommended combination for the OnePlus Pad 3 Pro, after a confirmation that says
+    // what it does and that it is experimental (90 fps changes the game's speed if it cannot be held).
+    void askPreset() {
+        if (!hasAccess()) {
+            askAccess();
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(t("Un toque: 2K90", "One-tap 2K90"))
+                .setMessage(t("Se escribirán estos ajustes para el OnePlus Pad 3 Pro:\n\n"
+                                + "• Modo de rendimiento: 2K 90\n"
+                                + "• Altura de renderizado: 1440p (2K), con allow_over_1080=1\n"
+                                + "• Fotogramas por segundo: 90\n"
+                                + "• Frecuencia de actualización: 90 Hz\n"
+                                + "• Modo de presentación: mailbox\n"
+                                + "• Protección térmica: estándar, con resolución dinámica (mínimo 1080p)\n\n"
+                                + "Es EXPERIMENTAL: a 90 fps el juego avanza más rápido que su ritmo original, y si no se "
+                                + "sostienen los 90 fps se verá a cámara lenta. Vuelve a Modo de rendimiento → "
+                                + "Equilibrado si algo va mal.",
+                        "These settings will be written for the OnePlus Pad 3 Pro:\n\n"
+                                + "• Performance mode: 2K 90\n"
+                                + "• Render height: 1440p (2K), with allow_over_1080=1\n"
+                                + "• Frame rate: 90\n"
+                                + "• Refresh rate: 90 Hz\n"
+                                + "• Present mode: mailbox\n"
+                                + "• Thermal guard: standard, with dynamic resolution (1080p minimum)\n\n"
+                                + "It is EXPERIMENTAL: at 90 fps the game runs faster than its original pace, and if "
+                                + "90 fps cannot be held it will look slow. Go back to Performance mode → Balanced if "
+                                + "anything goes wrong."))
+                .setPositiveButton(t("Aplicar", "Apply"), new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int which) {
+                        applyPreset();
+                    }
+                })
+                .setNegativeButton(t("Cancelar", "Cancel"), null)
+                .show();
+    }
+
+    // The 2K90 combination of §3, written as single switches so the runtime's precedence (single > preset > upstream)
+    // is the same whether the player got here by the button or by hand.
+    void applyPreset() {
+        if (!hasAccess()) return;
+        load();
+        config.put("perf_mode", "2k90");
+        config.put("render_height", "1440");
+        config.put("allow_over_1080", "1");
+        config.put("fps_mode", "90");
+        // NOT NX_FPS_CAP: it only expresses 30 or 60 and wins over fps_mode, so NX_FPS_CAP=90 would run at 60 while
+        // the UI said 90 (§3.2). Removed here too, not just left unwritten: load() above keeps a stale one from an
+        // earlier config, and this method writes the file directly instead of going through save().
+        config.remove("NX_FPS_CAP");
+        config.put("refresh_hz", "90");
+        config.put("present_mode", "mailbox");
+        // A hot tablet degrades resolution instead of stuttering (docs/PERF-DESIGN.md §4.5).
+        config.put("thermal_guard", "1");
+        config.put("dyn_res", "1");
+        config.put("dyn_res_min", "1080");
+        // The game's own render size (svc_am.cpp GetDefaultDisplayResolution) and the window: 2560x1440.
+        config.put("NX_RENDER_RES", "2560x1440");
+        config.put("resolution", "2560x1440");
+        config.put("NX_RES", "2560x1440");
+        config.put("NX_HANDHELD", "0");
+        writeConfig(new File(dataDir(), "config.txt"), config);
+        refresh();
+        Toast.makeText(this, t("Ajustes 2K90 aplicados", "2K90 settings applied"), Toast.LENGTH_LONG).show();
+    }
+
+    // Above 60 fps the game's logic steps faster than its engine was tuned for (§1.1): warn, don't forbid.
+    // Also says what the runtime will do to the panel (§3.1): 90/120 with "follow the system" derives refresh_hz from
+    // fps, because the present interval is a whole number of vsyncs and a 60 Hz panel could not present 90 at all.
+    void updateFpsWarning() {
+        if (fpsWarning == null) return;
+        Option fps = option("fps_mode");
+        String v = fps == null ? null : fps.values[fps.pick];
+        boolean experimental = "90".equals(v) || "120".equals(v);
+        fpsWarning.setVisibility(experimental ? View.VISIBLE : View.GONE);
+        if (!experimental) return;
+        Option refresh = option("refresh_hz");
+        String hz = refresh == null ? null : refresh.values[refresh.pick];
+        String text = Lang.f(
+                "A %s fps el juego puede ir a velocidad equivocada (experimental). Si no se sostienen, irá a cámara lenta.",
+                "At %s fps the game may run at the wrong speed (experimental). If it cannot hold them, it slows down.", v);
+        if (hz == null || "0".equals(hz)) {
+            text += " " + Lang.f(
+                    "Con «seguir al sistema» la pantalla se pedirá a %s Hz automáticamente.",
+                    "With \"follow the system\" the panel is requested at %s Hz automatically.", v);
+        }
+        fpsWarning.setText(text);
+    }
+
+    Option option(String key) {
+        for (Option o : options) if (o.key.equals(key)) return o;
+        return null;
     }
 
     void askImport() {
@@ -861,7 +1047,70 @@ public class Launcher extends Activity {
         final String preset = config.get("GRAPHICS");
         if ("low".equals(preset)) config.put("NX_LOD_BIAS", "1");
         else if ("medium".equals(preset)) config.put("NX_LOD_BIAS", "0.5");
+
+        // ---- performance profile (docs/PERF-DESIGN.md §2-§3) ----
+        // The option rows above already put perf_mode / fps_mode / render_height / refresh_hz / present_mode /
+        // thermal_guard / dyn_res / dyn_res_min in as the player picked them. What follows keeps the older switches and
+        // the derived ones in step, so the runtime and games/p5r/game.cpp read one consistent set.
+
+        // games/p5r/game.cpp::pace() still reads NX_FPS_CAP, and it WINS over fps_mode with upstream's meaning of
+        // ">= 60 ? 60 : 30": it can only express 30 or 60 (docs/PERF-DESIGN.md §3.2). Writing NX_FPS_CAP=90 there
+        // would collapse to 60, so the UI would say 90 while the game ran at 60 -- the worst kind of bug, because it
+        // looks like it worked. So it is written only for the two values it can express and deleted otherwise; 90,
+        // 120 and "no limit" travel through fps_mode alone.
+        final String fps = config.get("fps_mode");
+        if ("30".equals(fps) || "60".equals(fps)) config.put("NX_FPS_CAP", fps);
+        else config.remove("NX_FPS_CAP");
+
+        // Over 1080 the render scale is clamped to 1080 unless allow_over_1080 is set (platform_android.cpp
+        // window_size()); the 2k / 2k90 / ultra presets imply it. An explicit render_height wins over the preset
+        // (§3: single switch > preset), so choosing 720/1080 under a 2K preset does not leave the clamp lifted.
+        // Absent otherwise, so balance stays upstream.
+        final String height = config.get("render_height");
+        final String mode = config.get("perf_mode");
+        boolean explicitHeight = height != null && !"0".equals(height);
+        boolean over1080 = explicitHeight
+                ? "1440".equals(height) || "1600".equals(height)
+                : "2k".equals(mode) || "2k90".equals(mode) || "ultra".equals(mode);
+        if (over1080) config.put("allow_over_1080", "1");
+        else config.remove("allow_over_1080");
+
+        // The exact render size. render_height "0" (automatic) takes the height its perf_mode asks for (§3): otherwise
+        // the resolution line left by the RESOLUTION option above would win over the preset, because window_size()
+        // reads resolution before the profile's render_height (platform_android.cpp). balance/custom ask for none, so
+        // the resolution option stands and the upstream render scale decides.
+        // NX_RENDER_RES is what the game sizes its own render targets from (svc_am.cpp GetDefaultDisplayResolution);
+        // NX_RES and resolution size the window (platform_android.cpp window_size()).
+        String effective = height != null && !"0".equals(height) ? height : presetHeight(mode);
+        if (effective != null) {
+            String wh = renderSize(effective);
+            config.put("resolution", wh);
+            config.put("NX_RES", wh);
+            config.put("NX_RENDER_RES", wh);
+            config.put("NX_HANDHELD", "0");
+        }
+
         writeConfig(new File(dataDir(), "config.txt"), config);
+    }
+
+    // The render height a perf_mode implies when render_height is left on automatic (docs/PERF-DESIGN.md §3).
+    // Null for balance (upstream: the GPU's render scale) and custom (the single switches decide).
+    static String presetHeight(String mode) {
+        if ("quality".equals(mode)) return "1080";
+        if ("2k".equals(mode) || "2k90".equals(mode)) return "1440";
+        if ("ultra".equals(mode)) return "1600";
+        return null;
+    }
+
+    // The window/render size for a render_height, in the runtime's WxH form. The screen's own aspect is not known
+    // here; window_size() takes only the height and scales the width to the display, so the width matters only for
+    // NX_RENDER_RES (the game's own render targets, svc_am.cpp). 1600 is 2.5K's usual 2560x1600.
+    static String renderSize(String height) {
+        if ("720".equals(height)) return "1280x720";
+        if ("1080".equals(height)) return "1920x1080";
+        if ("1440".equals(height)) return "2560x1440";
+        if ("1600".equals(height)) return "2560x1600";
+        return "";
     }
 
     int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }

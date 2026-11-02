@@ -77,6 +77,208 @@ final class Lang {
                 "フレームレート", "프레임 레이트", "帧率", "影格率");
         put("60 fps (experimental)", "60 fps (expérimental)", "60 fps (experimentell)", "60 fps (sperimentale)",
                 "60 fps (experimental)", "60 fps（実験的）", "60 fps (실험적)", "60 fps（实验性）", "60 fps（實驗性）");
+        put("30 fps", "30 fps", "30 fps", "30 fps", "30 fps", "30 fps", "30 fps", "30 fps", "30 fps");
+        put("90 fps (experimental)", "90 fps (expérimental)", "90 fps (experimentell)", "90 fps (sperimentale)",
+                "90 fps (experimental)", "90 fps（実験的）", "90 fps (실험적)", "90 fps（实验性）", "90 fps（實驗性）");
+        put("120 fps (experimental)", "120 fps (expérimental)", "120 fps (experimentell)", "120 fps (sperimentale)",
+                "120 fps (experimental)", "120 fps（実験的）", "120 fps (실험적)", "120 fps（实验性）",
+                "120 fps（實驗性）");
+        put("No limit", "Sans limite", "Unbegrenzt", "Senza limite", "Sem limite", "上限なし", "제한 없음", "无上限",
+                "無上限");
+        // The performance profile (docs/PERF-DESIGN.md §2-§3)
+        put("Performance mode", "Mode de performance", "Leistungsmodus", "Modalità prestazioni", "Modo de desempenho",
+                "パフォーマンスモード", "성능 모드", "性能模式", "效能模式");
+        put("Balanced (default)", "Équilibré (par défaut)", "Ausgewogen (Standard)", "Bilanciato (predefinito)",
+                "Equilibrado (padrão)", "バランス（既定）", "균형 (기본)", "均衡（默认）", "均衡（預設）");
+        put("Quality 1080p60", "Qualité 1080p60", "Qualität 1080p60", "Qualità 1080p60", "Qualidade 1080p60",
+                "画質 1080p60", "품질 1080p60", "画质 1080p60", "畫質 1080p60");
+        put("2K 60", "2K 60", "2K 60", "2K 60", "2K 60", "2K 60", "2K 60", "2K 60", "2K 60");
+        put("2K 90 (experimental)", "2K 90 (expérimental)", "2K 90 (experimentell)", "2K 90 (sperimentale)",
+                "2K 90 (experimental)", "2K 90（実験的）", "2K 90 (실험적)", "2K 90（实验性）", "2K 90（實驗性）");
+        put("Ultra 2.5K 120 (experimental)", "Ultra 2.5K 120 (expérimental)", "Ultra 2,5K 120 (experimentell)",
+                "Ultra 2.5K 120 (sperimentale)", "Ultra 2.5K 120 (experimental)", "ウルトラ 2.5K 120（実験的）",
+                "울트라 2.5K 120 (실험적)", "极限 2.5K 120（实验性）", "極限 2.5K 120（實驗性）");
+        put("Custom", "Personnalisé", "Benutzerdefiniert", "Personalizzato", "Personalizado", "カスタム", "사용자 지정",
+                "自定义", "自訂");
+        put("Render height", "Hauteur de rendu", "Renderhöhe", "Altezza di rendering", "Altura de renderização",
+                "レンダリング高さ", "렌더링 높이", "渲染高度", "渲染高度");
+        put("Automatic (follows the mode)", "Automatique (selon le mode)", "Automatisch (je nach Modus)",
+                "Automatica (segue la modalità)", "Automática (segue o modo)", "自動（モードに従う）",
+                "자동 (모드에 따름)", "自动（跟随模式）", "自動（跟隨模式）");
+        put("720p", "720p", "720p", "720p", "720p", "720p", "720p", "720p", "720p");
+        put("1080p", "1080p", "1080p", "1080p", "1080p", "1080p", "1080p", "1080p", "1080p");
+        put("1440p (2K)", "1440p (2K)", "1440p (2K)", "1440p (2K)", "1440p (2K)", "1440p（2K）", "1440p (2K)",
+                "1440p（2K）", "1440p（2K）");
+        put("1600p (2.5K)", "1600p (2,5K)", "1600p (2,5K)", "1600p (2.5K)", "1600p (2,5K)", "1600p（2.5K）",
+                "1600p (2.5K)", "1600p（2.5K）", "1600p（2.5K）");
+        put("Refresh rate", "Fréquence de rafraîchissement", "Bildwiederholrate", "Frequenza di aggiornamento",
+                "Taxa de atualização", "リフレッシュレート", "주사율", "刷新率", "刷新率");
+        put("Follow the system", "Suivre le système", "System folgen", "Segui il sistema", "Seguir o sistema",
+                "システムに従う", "시스템 따름", "跟随系统", "跟隨系統");
+        put("60 Hz", "60 Hz", "60 Hz", "60 Hz", "60 Hz", "60 Hz", "60 Hz", "60 Hz", "60 Hz");
+        put("90 Hz", "90 Hz", "90 Hz", "90 Hz", "90 Hz", "90 Hz", "90 Hz", "90 Hz", "90 Hz");
+        put("120 Hz", "120 Hz", "120 Hz", "120 Hz", "120 Hz", "120 Hz", "120 Hz", "120 Hz", "120 Hz");
+        put("144 Hz", "144 Hz", "144 Hz", "144 Hz", "144 Hz", "144 Hz", "144 Hz", "144 Hz", "144 Hz");
+        put("Present mode", "Mode de présentation", "Präsentationsmodus", "Modalità di presentazione",
+                "Modo de apresentação", "表示モード", "표시 모드", "呈现模式", "呈現模式");
+        put("Automatic", "Automatique", "Automatisch", "Automatico", "Automático", "自動", "자동", "自动", "自動");
+        put("FIFO (vsync)", "FIFO (vsync)", "FIFO (VSync)", "FIFO (vsync)", "FIFO (vsync)", "FIFO（vsync）",
+                "FIFO (vsync)", "FIFO（垂直同步）", "FIFO（垂直同步）");
+        put("Mailbox (low latency)", "Mailbox (faible latence)", "Mailbox (geringe Latenz)", "Mailbox (bassa latenza)",
+                "Mailbox (baixa latência)", "メールボックス（低遅延）", "메일박스 (저지연)", "Mailbox（低延迟）",
+                "Mailbox（低延遲）");
+        put("Immediate (no vsync)", "Immediate (sans vsync)", "Immediate (kein VSync)", "Immediate (senza vsync)",
+                "Immediate (sem vsync)", "即時（vsync なし）", "즉시 (vsync 없음)", "Immediate（无垂直同步）",
+                "Immediate（無垂直同步）");
+        // The thermal guard and dynamic resolution (docs/PERF-DESIGN.md §4.5)
+        put("Thermal guard", "Protection thermique", "Hitzeschutz", "Protezione termica", "Proteção térmica",
+                "熱保護", "발열 보호", "热保护", "熱保護");
+        put("Standard (recommended, cannot be fully disabled)",
+                "Standard (recommandée, ne peut pas être désactivée totalement)",
+                "Standard (empfohlen, nicht vollständig abschaltbar)",
+                "Standard (consigliata, non disattivabile del tutto)",
+                "Padrão (recomendada, não pode ser desativada por completo)",
+                "標準（推奨・完全には無効化できません）", "표준 (권장, 완전히 끌 수 없음)",
+                "标准（推荐，无法完全关闭）", "標準（建議，無法完全關閉）");
+        put("Aggressive (cooler, backs off sooner)", "Agressive (plus froide, réduit plus tôt)",
+                "Aggressiv (kühler, drosselt früher)", "Aggressiva (più fresca, riduce prima)",
+                "Agressiva (mais fria, reduz antes)", "積極的（より低温・早めに抑制）",
+                "적극적 (더 시원함, 더 빨리 낮춤)", "激进（更凉快，更早降频）", "積極（更涼爽，更早降頻）");
+        put("Log only (testing: does NOT protect against heat)",
+                "Journalisation seule (tests : NE protège PAS de la chaleur)",
+                "Nur protokollieren (Test: schützt NICHT vor Hitze)",
+                "Solo registro (test: NON protegge dal calore)",
+                "Apenas registrar (testes: NÃO protege contra o calor)",
+                "記録のみ（テスト用：熱から保護しません）", "기록만 (테스트: 발열을 보호하지 않음)",
+                "仅记录（测试：不提供热保护）", "僅記錄（測試：不提供熱保護）");
+        put("Dynamic resolution", "Résolution dynamique", "Dynamische Auflösung", "Risoluzione dinamica",
+                "Resolução dinâmica", "動的解像度", "동적 해상도", "动态分辨率", "動態解析度");
+        put("On (lowers the resolution when needed)", "Activée (baisse la résolution si nécessaire)",
+                "An (senkt bei Bedarf die Auflösung)", "Attiva (riduce la risoluzione se serve)",
+                "Ativada (reduz a resolução se preciso)", "オン（必要に応じて解像度を下げる）",
+                "켬 (필요하면 해상도를 낮춤)", "开（需要时降低分辨率）", "開（需要時降低解析度）");
+        put("Min render height", "Hauteur de rendu minimale", "Minimale Renderhöhe", "Altezza di rendering minima",
+                "Altura de renderização mínima", "レンダリング高さの下限", "최소 렌더링 높이", "最低渲染高度",
+                "最低渲染高度");
+        put("900p", "900p", "900p", "900p", "900p", "900p", "900p", "900p", "900p");
+        // The one-tap preset and the frame rate warning
+        put("One-tap 2K90 (recommended for the OnePlus Pad 3 Pro)",
+                "Un toucher : 2K90 (recommandé pour OnePlus Pad 3 Pro)",
+                "Ein Tippen: 2K90 (empfohlen für OnePlus Pad 3 Pro)",
+                "Un tocco: 2K90 (consigliato per OnePlus Pad 3 Pro)",
+                "Um toque: 2K90 (recomendado para o OnePlus Pad 3 Pro)",
+                "ワンタップ 2K90（OnePlus Pad 3 Pro 推奨）", "원터치 2K90 (OnePlus Pad 3 Pro 권장)",
+                "一键 2K90（一加平板 3 Pro 推荐）", "一鍵 2K90（一加平板 3 Pro 推薦）");
+        put("One-tap 2K90", "Un toucher : 2K90", "Ein Tippen: 2K90", "Un tocco: 2K90", "Um toque: 2K90",
+                "ワンタップ 2K90", "원터치 2K90", "一键 2K90", "一鍵 2K90");
+        put("Apply", "Appliquer", "Anwenden", "Applica", "Aplicar", "適用", "적용", "应用", "套用");
+        put("2K90 settings applied", "Réglages 2K90 appliqués", "2K90-Einstellungen angewendet",
+                "Impostazioni 2K90 applicate", "Ajustes 2K90 aplicados", "2K90 設定を適用しました",
+                "2K90 설정을 적용했습니다", "已应用 2K90 设置", "已套用 2K90 設定");
+        put("At %s fps the game may run at the wrong speed (experimental). If it cannot hold them, it slows down.",
+                "À %s fps, le jeu peut aller à la mauvaise vitesse (expérimental). S'il ne les tient pas, il ralentit.",
+                "Bei %s fps läuft das Spiel evtl. mit falscher Geschwindigkeit (experimentell). Werden sie nicht "
+                        + "gehalten, wird es langsamer.",
+                "A %s fps il gioco può andare alla velocità sbagliata (sperimentale). Se non li tiene, rallenta.",
+                "A %s fps o jogo pode ir à velocidade errada (experimental). Se não os sustentar, fica lento.",
+                "%s fps ではゲームが誤った速度で動く可能性があります（実験的）。維持できない場合は低速になります。",
+                "%s fps 에서는 게임이 잘못된 속도로 동작할 수 있습니다(실험적). 유지하지 못하면 느려집니다.",
+                "在 %s fps 下游戏可能以错误速度运行（实验性）。若无法维持，会变慢。",
+                "在 %s fps 下遊戲可能以錯誤速度執行（實驗性）。若無法維持，會變慢。");
+        put("With \"follow the system\" the panel is requested at %s Hz automatically.",
+                "Avec « suivre le système », l'écran sera demandé à %s Hz automatiquement.",
+                "Mit „System folgen“ wird das Display automatisch mit %s Hz angefordert.",
+                "Con «segui il sistema» lo schermo verrà richiesto a %s Hz automaticamente.",
+                "Com «seguir o sistema» a tela será solicitada a %s Hz automaticamente.",
+                "「システムに従う」の場合、画面は自動的に %s Hz で要求されます。",
+                "「시스템 따름」이면 화면이 자동으로 %s Hz 로 요청됩니다.",
+                "选择“跟随系统”时会自动向屏幕请求 %s Hz。",
+                "選擇「跟隨系統」時會自動向螢幕要求 %s Hz。");
+        put("These settings will be written for the OnePlus Pad 3 Pro:\n\n"
+                        + "• Performance mode: 2K 90\n"
+                        + "• Render height: 1440p (2K), with allow_over_1080=1\n"
+                        + "• Frame rate: 90\n"
+                        + "• Refresh rate: 90 Hz\n"
+                        + "• Present mode: mailbox\n"
+                        + "• Thermal guard: standard, with dynamic resolution (1080p minimum)\n\n"
+                        + "It is EXPERIMENTAL: at 90 fps the game runs faster than its original pace, and if 90 fps "
+                        + "cannot be held it will look slow. Go back to Performance mode → Balanced if anything goes "
+                        + "wrong.",
+                "Ces réglages seront écrits pour l'OnePlus Pad 3 Pro :\n\n"
+                        + "• Mode de performance : 2K 90\n"
+                        + "• Hauteur de rendu : 1440p (2K), avec allow_over_1080=1\n"
+                        + "• Images par seconde : 90\n"
+                        + "• Fréquence de rafraîchissement : 90 Hz\n"
+                        + "• Mode de présentation : mailbox\n"
+                        + "• Protection thermique : standard, avec résolution dynamique (1080p minimum)\n\n"
+                        + "C'est EXPÉRIMENTAL : à 90 fps le jeu avance plus vite que son rythme d'origine, et si les "
+                        + "90 fps ne tiennent pas, il semblera lent. Revenez à Mode de performance → Équilibré en cas "
+                        + "de problème.",
+                "Diese Einstellungen werden für das OnePlus Pad 3 Pro geschrieben:\n\n"
+                        + "• Leistungsmodus: 2K 90\n"
+                        + "• Renderhöhe: 1440p (2K), mit allow_over_1080=1\n"
+                        + "• Bildrate: 90\n"
+                        + "• Bildwiederholrate: 90 Hz\n"
+                        + "• Präsentationsmodus: Mailbox\n"
+                        + "• Hitzeschutz: Standard, mit dynamischer Auflösung (mindestens 1080p)\n\n"
+                        + "Es ist EXPERIMENTELL: bei 90 fps läuft das Spiel schneller als im Original, und wenn die "
+                        + "90 fps nicht gehalten werden, wirkt es langsam. Bei Problemen zurück zu Leistungsmodus → "
+                        + "Ausgewogen.",
+                "Queste impostazioni verranno scritte per l'OnePlus Pad 3 Pro:\n\n"
+                        + "• Modalità prestazioni: 2K 90\n"
+                        + "• Altezza di rendering: 1440p (2K), con allow_over_1080=1\n"
+                        + "• Fotogrammi al secondo: 90\n"
+                        + "• Frequenza di aggiornamento: 90 Hz\n"
+                        + "• Modalità di presentazione: mailbox\n"
+                        + "• Protezione termica: standard, con risoluzione dinamica (minimo 1080p)\n\n"
+                        + "È SPERIMENTALE: a 90 fps il gioco va più veloce del ritmo originale, e se i 90 fps non "
+                        + "tengono sembrerà lento. Torna a Modalità prestazioni → Bilanciato se qualcosa va storto.",
+                "Estes ajustes serão escritos para o OnePlus Pad 3 Pro:\n\n"
+                        + "• Modo de desempenho: 2K 90\n"
+                        + "• Altura de renderização: 1440p (2K), com allow_over_1080=1\n"
+                        + "• Quadros por segundo: 90\n"
+                        + "• Taxa de atualização: 90 Hz\n"
+                        + "• Modo de apresentação: mailbox\n"
+                        + "• Proteção térmica: padrão, com resolução dinâmica (mínimo 1080p)\n\n"
+                        + "É EXPERIMENTAL: a 90 fps o jogo anda mais rápido que o ritmo original, e se os 90 fps não "
+                        + "se sustentarem vai parecer lento. Volte para Modo de desempenho → Equilibrado se algo der "
+                        + "errado.",
+                "OnePlus Pad 3 Pro 向けに次の設定を書き込みます：\n\n"
+                        + "• パフォーマンスモード：2K 90\n"
+                        + "• レンダリング高さ：1440p（2K）、allow_over_1080=1 付き\n"
+                        + "• フレームレート：90\n"
+                        + "• リフレッシュレート：90 Hz\n"
+                        + "• 表示モード：メールボックス\n"
+                        + "• 熱保護：標準、動的解像度つき（最小 1080p）\n\n"
+                        + "これは実験的な設定です：90 fps ではゲームが本来より速く進み、90 fps を維持できないと"
+                        + "低速に見えます。問題があればパフォーマンスモード → バランスに戻してください。",
+                "OnePlus Pad 3 Pro 에 다음 설정을 기록합니다:\n\n"
+                        + "• 성능 모드: 2K 90\n"
+                        + "• 렌더링 높이: 1440p (2K), allow_over_1080=1 포함\n"
+                        + "• 프레임 레이트: 90\n"
+                        + "• 주사율: 90 Hz\n"
+                        + "• 표시 모드: 메일박스\n"
+                        + "• 발열 보호: 표준, 동적 해상도 포함(최소 1080p)\n\n"
+                        + "실험적 설정입니다: 90 fps 에서는 게임이 원래보다 빠르게 진행되고, 90 fps 를 유지하지 "
+                        + "못하면 느리게 보입니다. 문제가 있으면 성능 모드 → 균형으로 돌아가세요.",
+                "将为 OnePlus Pad 3 Pro 写入以下设置：\n\n"
+                        + "• 性能模式：2K 90\n"
+                        + "• 渲染高度：1440p（2K），并写入 allow_over_1080=1\n"
+                        + "• 帧率：90\n"
+                        + "• 刷新率：90 Hz\n"
+                        + "• 呈现模式：Mailbox\n"
+                        + "• 热保护：标准，并启用动态分辨率（最低 1080p）\n\n"
+                        + "这是实验性设置：在 90 fps 下游戏会比原本节奏更快；若无法维持 90 fps，画面会显得变慢。"
+                        + "如有问题，请回到 性能模式 → 均衡。",
+                "將為 OnePlus Pad 3 Pro 寫入以下設定：\n\n"
+                        + "• 效能模式：2K 90\n"
+                        + "• 渲染高度：1440p（2K），並寫入 allow_over_1080=1\n"
+                        + "• 影格率：90\n"
+                        + "• 刷新率：90 Hz\n"
+                        + "• 呈現模式：Mailbox\n"
+                        + "• 熱保護：標準，並啟用動態解析度（最低 1080p）\n\n"
+                        + "這是實驗性設定：在 90 fps 下遊戲會比原本節奏更快；若無法維持 90 fps，畫面會顯得變慢。"
+                        + "如有問題，請回到 效能模式 → 均衡。");
         put("Shadows", "Ombres", "Schatten", "Ombre", "Sombras", "影", "그림자", "阴影", "陰影");
         put("Off", "Désactivé", "Aus", "Disattivato", "Desativado", "オフ", "끔", "关", "關");
         put("Fullscreen (stretch)", "Plein écran (étirer)", "Vollbild (strecken)", "Schermo intero (allarga)", "Tela cheia (esticar)", "\u5168\u753b\u9762\uff08\u5f15\u304d\u4f38\u3070\u3057\uff09", "\uc804\uccb4 \ud654\uba74 (\ub298\uc774\uae30)", "\u5168\u5c4f\uff08\u62c9\u4f38\uff09", "\u5168\u87a2\u5e55\uff08\u62c9\u4f38\uff09");

@@ -1,10 +1,12 @@
 // Performance hints (docs/nvn/ANDROID-PORT.md A5, DEBUG-2.md #84): on Android the threads that make a frame (the
 // game's render thread, which also replays NVN, and the presenting one) join an ADPF session (APerformanceHint,
-// Android 13+) with a 16.7 ms target, and each frame's duration is reported. The system then raises the big cores'
-// clocks when a frame runs late instead of guessing from load, which on phones keeps a steady 60 fps cooler and faster
-// than the default governor. The API is looked up with dlsym, so older Android versions just go without.
+// Android 13+) with the target frame time of the chosen fps 档位, and each frame's duration is reported. The system
+// then raises the big cores' clocks when a frame runs late instead of guessing from load, which on phones keeps a
+// steady 60 fps cooler and faster than the default governor. The API is looked up with dlsym, so older Android
+// versions just go without.
 // NX_ADPF=0: off. Other platforms: nothing.
 #include "platform.h"
+#include "perf_profile.h"
 
 #if defined(__ANDROID__)
 #include <dlfcn.h>
@@ -63,6 +65,14 @@ std::vector<int32_t> g_tids;
 void* g_session = nullptr;
 bool g_dirty = false;
 
+// The frame period ADPF is told to expect, in ns: 1e9 / fps of the perf profile. Nothing configured (or an uncapped
+// profile, which has no target to name): 16.67 ms, what this file used before the perf profile existed.
+int64_t perf_target_ns() {
+    const nx::perf::Profile& pf = nx::perf::profile();
+    if (pf.fps <= 0) return 16'666'667;
+    return int64_t(1'000'000'000ll / pf.fps);
+}
+
 }  // namespace
 
 // NX_GPU_TURBO=1 (an experiment, off by default): the Adreno kernel driver's power control off, so the GPU runs at its
@@ -110,12 +120,14 @@ void perf_hint_frame(int64_t ns) {
     std::lock_guard lk(g_lock);
     if (g_dirty && !g_tids.empty()) {  // a new thread made part of the frame: a session with all of them
         if (g_session) a.close(g_session);
-        // The ADPF target is the frame period: 33.3 ms when NX_FPS_CAP holds the game at 30 fps (nvn_queue.cpp).
-        const char* cap = std::getenv("NX_FPS_CAP");
-        int64_t target = cap && std::atoi(cap) > 0 && std::atoi(cap) <= 30 ? 33'333'333 : 16'666'667;
+        // The ADPF target is the frame period of the chosen fps 档位 (perf_profile.h, docs/PERF-DESIGN.md §2):
+        // 33.3 ms at 30 fps, 16.7 ms at 60 (upstream's target, unchanged when nothing is configured), 11.1 ms at 90,
+        // 8.3 ms at 120. An uncapped profile (fps_mode=0) keeps 60's period: there is no target to name.
+        const int64_t target = perf_target_ns();
         g_session = a.create(a.get_manager(), g_tids.data(), g_tids.size(), target);
         g_dirty = false;
-        log("adpf: %s for %zu threads", g_session ? "session made" : "no session", g_tids.size());
+        log("adpf: %s for %zu threads, target %.1f ms", g_session ? "session made" : "no session", g_tids.size(),
+            double(target) / 1e6);
     }
     if (g_session) a.report(g_session, ns);
 }
