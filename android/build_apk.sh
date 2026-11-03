@@ -103,8 +103,10 @@ if [ "$nce" = 1 ]; then
     # apksigner and d8 need a JDK; javac builds the launcher (games/<game>/java).
     if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/javac" ]; then
         javac="$JAVA_HOME/bin/javac"
+        jar_tool="$JAVA_HOME/bin/jar"
     elif command -v javac >/dev/null 2>&1; then
         javac="$(command -v javac)"
+        jar_tool="jar"
     else
         echo "a JDK is needed for games/$game/java (JAVA_HOME, or javac on the PATH)" >&2; exit 1
     fi
@@ -130,8 +132,12 @@ if [ "$nce" = 1 ]; then
         find "$root/games/$game/java" -name '*.java' > "$st/sources.txt"
         "$javac" -nowarn -encoding UTF-8 -source 1.8 -target 1.8 -Xlint:-options -bootclasspath "$jar" \
             -d "$st/classes" @"$st/sources.txt"
-        (cd "$st/classes" && find . -name '*.class' > ../classes.txt)
-        (cd "$st" && "$bt/d8" --release --min-api 30 --lib "$jar" --output dex @classes.txt)
+        # d8 is fed a jar, not an @argfile of class files: an anonymous inner class is written as Launcher$7.class, and
+        # passing that path through d8's argument file failed with
+        #   java.nio.file.NoSuchFileException: ./io/github/p5rrecomp/Launcher$7.class
+        # on the CI runner (the file was there). Archiving the tree first is d8's canonical input and has no such edge.
+        (cd "$st/classes" && "$jar_tool" cf "$st/classes.jar" .)
+        (cd "$st" && "$bt/d8" --release --min-api 30 --lib "$jar" --output dex "$st/classes.jar")
         (cd "$st" && zip -q -j "$out/base.apk" dex/classes.dex)
     fi
     # The native libraries: compressed, so extractNativeLibs (the manifest) unpacks them and no page alignment is needed.
