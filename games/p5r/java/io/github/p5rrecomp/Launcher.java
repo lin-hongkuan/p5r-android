@@ -100,10 +100,61 @@ public class Launcher extends Activity {
     final Map<String, String> config = new LinkedHashMap<>();
     TextView status;
     TextView fpsWarning;
+    // The home screen is one scroll: without grouping it is 25 flat rows, so the option list gets section headers and
+    // the six expert tuning switches sit behind a toggle (only the performance preset and the frame rate are shown by
+    // default). perfSummary states what will actually run, which is the feedback that used to require reading logcat.
+    TextView perfSummary;
+    final List<View> advancedViews = new ArrayList<>();
+    boolean showAdvanced = false;
+    // The tuning switches hidden until "advanced" is turned on. performance_mode and fps_mode stay visible: they are
+    // the two choices a player actually makes.
+    static final List<String> ADVANCED_KEYS =
+            java.util.Arrays.asList("render_height", "refresh_hz", "present_mode", "thermal_guard", "dyn_res", "dyn_res_min");
     Button play;
     static final int PICK_ZIP = 1, PICK_FOLDER = 2, PICK_GAME = 3, PICK_KEYS = 4, PICK_ICON = 5, PREPARE = 6, PICK_CPK = 7, PICK_DRIVER = 8;
 
     String t(String spanish, String english) { return Lang.t(spanish, english); }
+
+    /** The section a row belongs to; a header is drawn whenever this changes (contiguous runs of the option list). */
+    static String sectionOf(String key) {
+        if ("language".equals(key)) return "S1";
+        if ("RESOLUTION".equals(key) || "NX_STRETCH".equals(key) || "NX_HUD_1080".equals(key) || "GRAPHICS".equals(key))
+            return "S2";
+        if (ADVANCED_KEYS.contains(key) || "perf_mode".equals(key) || "fps_mode".equals(key)) return "S3";
+        if ("NX_SHADOWS".equals(key) || "NX_SHOW_FPS".equals(key)) return "S4";
+        if ("NX_TOUCH_SHOW".equals(key) || "NX_TOUCH_SIZE".equals(key) || "NX_TOUCH_OPACITY".equals(key)) return "S5";
+        if ("NX_NO_CROWD".equals(key) || "NX_DISABLE_BLOOM".equals(key)) return "S6";
+        return "S7";
+    }
+
+    TextView sectionHeader(String section) {
+        TextView h = new TextView(this);
+        h.setTextColor(Color.rgb(120, 170, 255));
+        h.setTextSize(14);
+        h.setTypeface(null, Typeface.BOLD);
+        h.setPadding(0, dp(14), 0, dp(2));
+        if ("S1".equals(section)) h.setText(t("Textos", "Text"));
+        else if ("S2".equals(section)) h.setText(t("Imagen", "Picture"));
+        else if ("S3".equals(section)) h.setText(t("Rendimiento", "Performance"));
+        else if ("S4".equals(section)) h.setText(t("Imagen: detalles", "Picture: extras"));
+        else if ("S5".equals(section)) h.setText(t("Controles en pantalla", "On-screen controls"));
+        else if ("S6".equals(section)) h.setText(t("Coste del dibujado", "Rendering cost"));
+        else h.setText(t("Mando y sensibilidad", "Gamepad and sensitivity"));
+        return h;
+    }
+
+    String labelOf(String key) {
+        for (Option o : options) if (o.key.equals(key)) return label(o);
+        return "";
+    }
+
+    /** What the runtime will actually do, so "did the preset take effect" needs no logcat. */
+    void updatePerfSummary() {
+        if (perfSummary == null) return;
+        perfSummary.setText(t("En juego: ", "In game: ") + labelOf("perf_mode") + " · " + labelOf("fps_mode") + " · "
+                + labelOf("render_height") + " · " + labelOf("refresh_hz") + " · " + labelOf("present_mode") + " · "
+                + labelOf("thermal_guard"));
+    }
 
     String label(Option o) { return t(o.labelsEs[o.pick], o.labelsEn[o.pick]); }
 
@@ -475,7 +526,16 @@ public class Launcher extends Activity {
             }
         });
 
+        String lastSection = "";
         for (final Option o : options) {
+            // A header whenever the section changes, so the list reads as 语言 / 画面 / 性能 / 操作 / 其他 instead of
+            // one undifferentiated column of 25 rows.
+            final String section = sectionOf(o.key);
+            if (!section.equals(lastSection)) {
+                lastSection = section;
+                root.addView(sectionHeader(section));
+            }
+            final boolean advanced = ADVANCED_KEYS.contains(o.key);
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
@@ -500,6 +560,10 @@ public class Launcher extends Activity {
             });
             value.setTag(o);
             root.addView(row);
+            if (advanced) {
+                advancedViews.add(row);
+                row.setVisibility(View.GONE);  // revealed by the toggle below
+            }
             // Above 60 the game's logic steps faster than the engine was tuned for: say so under the frame rate row
             // (docs/PERF-DESIGN.md §1.1, §5). Shown or hidden by refresh() and by the button itself.
             if ("fps_mode".equals(o.key)) {
@@ -510,6 +574,36 @@ public class Launcher extends Activity {
                 root.addView(fpsWarning);
             }
         }
+
+        // What the runtime will actually do with the current settings, plus the expert switches behind a toggle.
+        perfSummary = new TextView(this);
+        perfSummary.setTextColor(Color.rgb(140, 220, 140));
+        perfSummary.setTextSize(14);
+        perfSummary.setPadding(0, dp(6), 0, dp(2));
+        root.addView(perfSummary);
+        LinearLayout advRow = new LinearLayout(this);
+        advRow.setOrientation(LinearLayout.HORIZONTAL);
+        advRow.setGravity(Gravity.CENTER_VERTICAL);
+        advRow.setPadding(0, dp(2), 0, dp(8));
+        TextView advName = new TextView(this);
+        advName.setText(t("Ajustes avanzados de rendimiento", "Advanced performance settings"));
+        advName.setTextColor(Color.WHITE);
+        advName.setTextSize(17);
+        advRow.addView(advName, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        final Button advButton = new Button(this);
+        advButton.setAllCaps(false);
+        advButton.setMinWidth(dp(180));
+        advButton.setText(t("Mostrar", "Show"));
+        advRow.addView(advButton);
+        advButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showAdvanced = !showAdvanced;
+                for (View view : advancedViews) view.setVisibility(showAdvanced ? View.VISIBLE : View.GONE);
+                advButton.setText(showAdvanced ? t("Ocultar", "Hide") : t("Mostrar", "Show"));
+            }
+        });
+        root.addView(advRow);
 
         LinearLayout edit = new LinearLayout(this);
         edit.setOrientation(LinearLayout.HORIZONTAL);
@@ -711,6 +805,7 @@ public class Launcher extends Activity {
 
     void refresh() {
         load();
+        updatePerfSummary();
         for (Option o : options) {
             String v = config.get(o.key);
             if ("RESOLUTION".equals(o.key) && v == null) {
@@ -1091,6 +1186,7 @@ public class Launcher extends Activity {
         }
 
         writeConfig(new File(dataDir(), "config.txt"), config);
+        updatePerfSummary();
     }
 
     // The render height a perf_mode implies when render_height is left on automatic (docs/PERF-DESIGN.md §3).

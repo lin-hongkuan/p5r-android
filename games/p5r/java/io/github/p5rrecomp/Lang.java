@@ -466,5 +466,30 @@ final class Lang {
         put("Extracting the game's shaders (%d of %d)…", "Extraction des shaders du jeu (%d sur %d)…", "Shader des Spiels werden extrahiert (%d von %d)…", "Estrazione degli shader del gioco (%d di %d)…", "Extraindo os shaders do jogo (%d de %d)…", "ゲームのシェーダーを抽出中（%d / %d）…", "게임 셰이더 추출 중(%d / %d)…", "正在提取游戏着色器（%d / %d）…", "正在擷取遊戲著色器（%d / %d）…");
         put("Translating the shaders (%d of %d)…", "Traduction des shaders (%d sur %d)…", "Shader werden übersetzt (%d von %d)…", "Traduzione degli shader (%d di %d)…", "Traduzindo os shaders (%d de %d)…", "シェーダーを変換中（%d / %d）…", "셰이더 변환 중(%d / %d)…", "正在转换着色器（%d / %d）…", "正在轉換著色器（%d / %d）…");
         put("Finishing…", "Finalisation…", "Wird abgeschlossen…", "Completamento…", "Finalizando…", "仕上げ中…", "마무리 중…", "正在完成…", "正在完成…");
+        put("Text", "Textos", "Textes", "Text", "Testo", "Texto", "テキスト", "텍스트", "文本", "文字");
+        put("Picture", "Imagen", "Image", "Bild", "Immagine", "Imagem", "映像", "화면", "画面", "畫面");
+        put("Performance",
+            "Rendimiento", "Performances", "Leistung", "Prestazioni", "Desempenho", "パフォーマンス", "성능", "性能", "效能");
+        put("Picture: extras",
+            "Imagen: detalles", "Image : détails", "Bild: Details", "Immagine: dettagli", "Imagem: detalhes",
+            "映像: 詳細", "화면: 세부", "画面：细节", "畫面：細節");
+        put("On-screen controls",
+            "Controles en pantalla", "Contrôles à l’écran", "Bildschirmsteuerung", "Controlli a schermo",
+            "Controles na tela", "画面上の操作", "화면 조작", "屏幕控制", "螢幕控制");
+        put("Rendering cost",
+            "Coste del dibujado", "Coût de rendu", "Renderkosten", "Costo di rendering", "Custo de renderização",
+            "描画コスト", "렌더링 비용", "渲染开销", "算繪開銷");
+        put("Gamepad and sensitivity",
+            "Mando y sensibilidad", "Manette et sensibilité", "Gamepad und Empfindlichkeit",
+            "Controller e sensibilità", "Controle e sensibilidade", "コントローラーと感度", "패드 및 감도", "手柄与灵敏度", "手把與靈敏度");
+        put("Advanced performance settings",
+            "Ajustes avanzados de rendimiento", "Réglages de performance avancés",
+            "Erweiterte Leistungseinstellungen", "Impostazioni prestazioni avanzate",
+            "Configurações de desempenho avançadas", "詳細パフォーマンス設定", "고급 성능 설정", "高级性能设置", "進階效能設定");
+        put("Show", "Mostrar", "Afficher", "Anzeigen", "Mostra", "Mostrar", "表示", "표시", "显示", "顯示");
+        put("Hide", "Ocultar", "Masquer", "Ausblenden", "Nascondi", "Ocultar", "非表示", "숨기기", "隐藏", "隱藏");
+        put("In game: ",
+            "En juego: ", "En jeu : ", "Im Spiel: ", "In gioco: ", "No jogo: ", "ゲーム内: ", "게임 내: ", "游戏内：", "遊戲內：");
+
     }
 }
