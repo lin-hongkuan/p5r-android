@@ -45,6 +45,7 @@
 #include <nx/runtime.h>
 
 #include "kernel.h"
+#include "perf_device.h"
 #include "perf_profile.h"
 #include "platform.h"
 #include "platform_android.h"
@@ -753,7 +754,9 @@ static const char* const kDataProbe = "/analysis/main.bin";
 #endif
 static bool has_data(const std::string& root) { return access((root + kDataProbe).c_str(), R_OK) == 0; }
 
-PLACEHOLDER_NOT_FOUND
+extern "C" void android_main(android_app* app) {
+    using namespace nx::plat;
+    g_app = app;
     // Game data: Internal storage/<game title> (put there by the player, needs all-files access) or the app's own
     // external files folder (adb push).
     // The folder picked on the home screen (games/<game>/java Home.java writes <files>/data_root.txt) comes first.
@@ -808,6 +811,11 @@ PLACEHOLDER_NOT_FOUND
         int zero = mallopt(M_BIONIC_ZERO_INIT, 0), decay = mallopt(M_DECAY_TIME, 1);
         nx::log("heap: zero-fill off (%d), page release delayed (%d)", zero, decay);
     }
+    // The device profile (perf_device.cpp, docs/PERF-DESIGN.md §6): recognise the SoC and fill in the switches the
+    // player did not configure. It MUST run here and not earlier: plat::setting() needs g_root (above) to read
+    // config.txt, and config.txt's NX_* lines must already be exported (above), otherwise a player's own choice would
+    // be invisible to it and the device defaults would overwrite it. Still before the first profile() call below.
+    nx::perf::auto_tune();
     // The perf profile (perf_profile.h): parsed once here, after g_root is known (config.txt) and after config.txt's
     // NX_* lines became environment variables, and logged so a player's logcat shows what took effect. Everything it
     // resolves defaults to upstream's behaviour (docs/PERF-DESIGN.md §2), so this changes nothing on its own.
