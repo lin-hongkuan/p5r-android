@@ -376,3 +376,68 @@ harness 支撑（190 + 65 + 89 checks 全绿），并用 3 次故障注入证明
 3. **真机**先验证 `perf_thermal_live.cpp` 的 `/sys/class/thermal` 代理读数是否合理（那是热保护的地基），
    再验证 DV-02（1440p 出图）、DV-06（90fps 与慢放）、DV-11（热保护）。
 4. 每台回归设备（尤其 Adreno 610 的 Lenovo Tab M11）跑 DV-01，确认 balance 与上游一致。
+
+---
+
+# 附录 A：云端构建验证（CI，2026-11-03）
+
+此前报告把"arm64 NDK 构建 + APK 打包"列为 **未验证（CI only）**。现已完成并验证。
+
+## A.1 结果
+
+| 项目 | 结果 | 证据 |
+|---|---|---|
+| host-tests 工作流（ubuntu-latest） | **成功**，ctest **6/6** | run 41586337509 之前的 host-tests 全部 success |
+| uild-apk 工作流（ubuntu-latest） | **成功** | run 41586337509，job p5r NCE arm64 APK |
+| libspirvharness.so（.NET 10 NativeAOT，android-arm64） | **成功构建** | artifact `spirv-harness` |
+| APK 产出 | **p5r.apk，3.4 MB，已签名** | artifact `p5r-nce-apk` |
+| APK 内容 | 见 A.2 | python zipfile 逐条校验，`testzip()` 全部条目 OK |
+| manifest 包名 | `io.github.p5rrecomp` 存在（UTF-16 检查） | 同上 |
+
+## A.2 APK 内容（已逐条校验）
+
+```
+AndroidManifest.xml                          已签名 AXML（包名 io.github.p5rrecomp）
+classes.dex                                  0.11 MB  启动器 + 13 键「2K90」预设
+lib/arm64-v8a/libp5r.so                      3.19 MB  运行时（全部性能改动）
+lib/arm64-v8a/libp5rimport.so                0.95 MB  机内导入器
+lib/arm64-v8a/libspirvharness.so             4.36 MB  着色器翻译器（"准备游戏"用）
+lib/arm64-v8a/lib{file_redirect,gsl_alloc,main}_hook.so, libhook_impl.so
+res/ + resources.arsc + META-INF（ANDROIDD.RSA 签名）
+```
+
+## A.3 构建过程中被抓到并修掉的 4 个真 bug
+
+这三个只有真实 CI 才能暴露，本地静态检查全部通过：
+
+| # | 症状 | 根因 | 修复 |
+|---|---|---|---|
+| B-01 | `host-tests` 失败：`INT_MIN was not declared` | 测试缺 `<climits>`，MSYS2 g++ 隐式包含而 Linux 不包含 | 加 `#include <climits>` |
+| B-02 | 装 SDK 步骤 exit 1 | `yes \| sdkmanager --licenses` 中 `yes` 收到 SIGPIPE，`set -o pipefail` 判失败 | 两侧都改为非致命 |
+| B-03 | 链接失败：`undefined symbol: nx::thermal::on_frame` | `perf_thermal.cpp` / `perf_thermal_live.cpp` 未加入 `NX_RUNTIME_SOURCES` | 加入 CMake 源列表 |
+| B-04 | `d8` 失败：`NoSuchFileException: ./.../Launcher\.class` | d8 的 `@argfile` 传入含 `\$` 的匿名内部类路径 | 先 `jar cf classes.jar` 再喂 d8（标准输入形式） |
+
+## A.4 仍然 未验证（需要真机，无法在 CI 完成）
+
+与 §6 一致：各档位**实际达成帧率**、1440p **实际渲染**（看 `android: setBuffersGeometry 2560x1440`）、
+面板是否真的切到 90Hz、MAILBOX 是否协商成功、热保护 L1/L2/L3 与恢复、动态分辨率、
+以及 `perf_device.cpp` 依赖的 `ro.soc.model == SM8850`。
+
+真机一次性采集命令：
+
+```powershell
+adb shell getprop ro.soc.model; adb shell getprop ro.board.platform; adb shell getprop ro.hardware.egl
+adb logcat -c; adb logcat -s p5r:V > p5r-log.txt
+# 启动游戏后另开一个窗口：
+adb shell dumpsys display | findstr /i "fps refresh"
+```
+
+关键日志行（证明各开关生效）：
+```
+perf: device soc=... -> target tablet (2K90), N setting(s) from the device profile
+perf: perf_mode=2k90 (... refresh 90 Hz ...), render height 1440 ...
+am: the game renders at 2560x1440 (docked)
+android: setBuffersGeometry 2560x1440 (screen 3392x2400) -> 0
+p5r: fps mode 90: target 90, present interval 1, display 90 Hz
+thermal: guard 1 (standard), dynamic resolution on, floor 1080, ceiling 1440, target 90 fps
+```
