@@ -189,6 +189,48 @@ present interval 只能是整数 vsync 数，所以 **"帧率 = 刷新率 ÷ 整
 3. 所有降档都有**滞回**（hysteresis），不会来回抖动。
 4. 最坏情况：渲染高度 1080 + 30 fps，即上游默认行为，绝不会比上游更差。
 
+## 6. 设备专属自动调优（perf_device.cpp）
+
+目标机型的要求是"**只针对我这款机型**"：用户不应手动选档，装上就该是调好的状态；而其它设备必须完全不受影响。
+
+### 6.1 识别
+
+`runtime/src/perf_device.cpp` 在 `android_main` 里、**`g_root` 与 config.txt 导入之后、第一次 `profile()` 之前**运行
+（顺序很关键：早于 `g_root` 会读不到 config.txt，从而误判"用户没配置"并覆盖用户选择）。
+
+| 来源 | 键 | 用途 |
+|---|---|---|
+| Android 属性 | `ro.soc.model` | `SM8850` = 骁龙 8 Elite Gen 5（目标 SoC） |
+| Android 属性 | `ro.board.platform` | `sun`（SM8850 主板代号，兜住改名 SKU） |
+| Android 属性 | `ro.hardware.egl` | 判断是否 Adreno 家族 |
+| Android 属性 | `ro.product.model` | 仅用于日志 |
+
+`target = (soc 以 SM8850 开头) || (soc == "sun")`。
+**不**从驱动名猜 GPU 型号：Vulkan 此时还没起来，而按驱动名猜会把 Adreno 610（上游参考设备）误判进旗舰路径。
+
+### 6.2 应用（只在用户未配置时）
+
+`target` 命中 → 一次性写入 2K90 组合：`perf_mode=2k90`、`render_height=1440`、`allow_over_1080=1`、`fps_mode=90`、
+`refresh_hz=90`、`present_mode=mailbox`、`dyn_res=1`、`dyn_res_min=1080`、`thermal_guard=1`、
+`NX_RENDER_RES=2560x1440`、`resolution=2560x1440`、`NX_HUD_RES=1440`。
+
+其它高 tier Adreno（`SM8*`/kalama/pineapple）→ 仅 `perf_mode=quality` + 1080p + 散热档，**不**擅自请求 90Hz
+或超过 1080p（那些只在目标机上调过，别的设备上是猜）。
+
+其它设备 → 一项不写，完全走上游默认。
+
+### 6.3 不覆盖用户
+
+每一项写入前都检查：`config.txt` 里是否已有该键（`plat::setting`），或环境里是否已有 `NX_<KEY>`。
+任一存在即跳过。`NX_DEVICE_TUNE=0` 整体关闭。
+
+### 6.4 验证状态
+
+- **已验证**：`perf_device.cpp` 编译干净（`-Wall -Wextra`）；顺序在代码中可核对（`g_root` L783 → `setenv` L797 → `auto_tune` L818 → `profile()` L822）。
+- **未验证（需真机）**：`ro.soc.model` 在 ColorOS 上确实返回 `SM8850`；`ro.hardware.egl` 含 `adreno`。
+  若两者都取不到，`target` 为假，运行时会安全地退回上游默认——失败方向是"没有优化"，不是"乱优化"。
+  真机确认命令：`adb shell getprop ro.soc.model; adb shell getprop ro.board.platform; adb shell getprop ro.hardware.egl`
+
 ## 5. 风险与缓解
 
 | 风险 | 影响 | 缓解 |
