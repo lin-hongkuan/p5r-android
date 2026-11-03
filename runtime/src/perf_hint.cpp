@@ -46,8 +46,14 @@ struct Api {
 const Api& api() {
     static const Api a = [] {
         Api x;
-        const char* e = std::getenv("NX_ADPF");
-        if (e && e[0] == '0') return x;
+        // Off switch, two ways, both required:
+        //   1. Upstream's own test, byte for byte: NX_ADPF whose first character is '0' (so "0", "00", "0x1" all turn
+        //      it off, exactly as before this module existed).
+        //   2. The perf profile's `adpf` switch (docs/PERF-DESIGN.md §2, §4): config.txt's `adpf` key, and NX_ADPF as a
+        //      boolean (0/false/off/no). Without this a player writing `adpf=0` in config.txt would be ignored: it has no
+        //      NX_ prefix, so android_main does not turn it into an environment variable.
+        if (const char* e = std::getenv("NX_ADPF"); e && e[0] == '0') return x;
+        if (!nx::perf::profile().adpf) return x;
         void* lib = dlopen("libandroid.so", RTLD_NOW);
         if (!lib) return x;
         x.get_manager = reinterpret_cast<GetManager>(dlsym(lib, "APerformanceHint_getManager"));

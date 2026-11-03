@@ -1,0 +1,93 @@
+# Host (x86-64 Linux) build + unit tests of the runtime.
+#
+# What this proves: the runtime still compiles and its unit tests pass on a non-Android host. CONTRIBUTING-FORK.md §3.4
+# and docs/PERF-DESIGN.md §6.3 require it, because every `#if defined(__ANDROID__)` block added for the perf work must
+# have a non-Android counterpart, or the PC/macOS builds break.
+#
+# It is deliberately small. CMakeLists.txt returns early ("building the unit tests only") when there is no generated
+# game code under private/<game>/gen and NX_NCE is off, so this job needs NO game data, NO SDL3 and NO Vulkan loader:
+# every target in the NX_TESTS block is standalone (see the block's own list). Adding -DNX_TESTS=ON is therefore enough.
+# Do not add a `find_package(SDL3)` / Vulkan SDK step here unless a test target starts needing one.
+name: host-tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'feat/**'
+      - main
+  pull_request:
+    branches:
+      - main
+
+# A new push to the same branch cancels the previous run: only the tip matters.
+concurrency:
+  group: host-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Warnings are not gated on: upstream has plenty (Vulkan struct-init, -Wunused-*), and a warning must never fail the
+  # branch. The gate is the compiler's and ctest's exit code.
+  CMAKE_BUILD_PARALLEL_LEVEL: 4
+
+jobs:
+  host-tests:
+    name: host build + ctest (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain
+        # Ubuntu 24.04 runners ship cmake and ninja already; install them only when missing, so the job does not fail
+        # on an apt hiccup for something we may not need. g++-14 is C++20-capable (CMakeLists.txt asks for C++20).
+        run: |
+          set -euo pipefail
+          missing=()
+          command -v cmake >/dev/null || missing+=(cmake)
+          command -v ninja >/dev/null || missing+=(ninja-build)
+          command -v g++   >/dev/null || missing+=(g++)
+          if [ ${#missing[@]} -gt 0 ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq "${missing[@]}"
+          fi
+          cmake --version | head -1
+          ninja --version
+          g++ --version | head -1
+
+      - name: Configure (unit tests only)
+        # No generated game code in a clean checkout, so CMakeLists.txt warns and returns after the test targets. The
+        # warning is expected; the configure must still succeed.
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-host -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNX_TESTS=ON \
+            -DNX_GAME=p5r
+
+      - name: Build the tests
+        run: cmake --build build-host --parallel 4
+
+      - name: Run ctest
+        # --output-on-failure: a failing test's own output is what the branch author needs. -V is too noisy.
+        run: ctest --test-dir build-host --output-on-failure --timeout 300
+
+      - name: List the tests that ran
+        # Proof that the perf tests are wired in (docs/PERF-DESIGN.md §6.2/§6.3): a test that is not listed did not run.
+        if: always()
+        run: ctest --test-dir build-host -N
+
+      - name: Upload the test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-tests-log
+          path: |
+            build-host/Testing/Temporary/LastTest.log
+            build-host/Testing/Temporary/LastTestsFailed.log
+          if-no-files-found: ignore
+          retention-days: 14

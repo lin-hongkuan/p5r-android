@@ -25,6 +25,7 @@ struct Live {
     Decision last;
     bool ready = false;
     bool announced = false;
+    bool log_on = true;   // thermal_log: gate the periodic summary, not the change announce
     int thermal = kNone;
     double since_thermal_s = 0.0;
     double since_log_s = 0.0;
@@ -100,6 +101,7 @@ void on_frame(int64_t frame_ns) {
     if (!l.ready) {
         l.cfg = config_from_profile();
         l.ready = true;
+        l.log_on = setting_int("thermal_log", 1) != 0;
         log_line(std::string("thermal: guard ") +
                  (l.cfg.guard == 0 ? "0 (record only)" : l.cfg.guard == 2 ? "2 (aggressive)" : "1 (standard)") +
                  ", dynamic resolution " + (l.cfg.dyn_res ? "on" : "off") + ", floor " +
@@ -121,7 +123,7 @@ void on_frame(int64_t frame_ns) {
     const bool degraded = l.last.fps_cap != 0 || l.last.drop_quality;
     const bool changed = l.announced != degraded;
     l.since_log_s += frame_s;
-    if (changed || l.since_log_s >= 10.0) {
+    if (changed || (l.log_on && l.since_log_s >= 10.0)) {
         l.announced = degraded;
         l.since_log_s = 0.0;
         log_line(std::string("thermal: zone ") + std::to_string(l.thermal) + ", frame " +

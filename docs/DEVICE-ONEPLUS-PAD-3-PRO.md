@@ -1,4 +1,4 @@
-﻿# 一加平板 3 Pro（OnePlus Pad 3 Pro）设备档案
+# 一加平板 3 Pro（OnePlus Pad 3 Pro）设备档案
 
 面向本仓库 Android 原生移植（NativeActivity + Vulkan）的目标设备说明。每条结论都标注 **已核实** / **未核实** 并给出出处；未核实的数字不要当成事实写进代码默认值。
 
@@ -297,6 +297,10 @@ ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS = 0  // 默认：只在能无�
 ANATIVEWINDOW_CHANGE_FRAME_RATE_ALWAYS           = 1  // 允许非无缝（可能闪一下）
 ```
 
+> 关于值 2：AOSP `main` 分支（对应 Android 16）里，**C 侧仍是 `..._GTE`，Java 侧仍是 `FRAME_RATE_COMPATIBILITY_GTE`**（已核实源码）。有资料称 Android 16 将其改名为 `AT_LEAST`，但我在 `main` 的 `native_window.h` 与 `Surface.java` 中都**未找到 `AT_LEAST`**，因此本仓库**不要使用值 2**——它对游戏也无用（注释明确写"UI/滚动，不是游戏或视频"）。
+
+> 另：枚举只有 `ONLY_IF_SEAMLESS` / `ALWAYS` 两个值，**不存在** `FRAME_RATE_CHANGE_STRATEGY_*` 前缀，也**不存在** `_IMMEDIATE` / `_ON_NEXT_VSYNC`。
+
 > ⚠️ **最容易写错的一点**：很多教程（包括一些 AI 生成的内容）会说游戏要用 `FIXED_SOURCE`。**错的**。AOSP 头文件原文写得很清楚：`DEFAULT` 的注释是 "This value should be used when displaying game content"，`FIXED_SOURCE` 的注释是 "This value should be used for video content"。游戏用 `DEFAULT`。
 
 > ⚠️ **第二容易写错**：`setFrameRate` 默认 strategy 是 `ONLY_IF_SEAMLESS`。从 60Hz 切到 144Hz 在很多面板上是**非无缝**的，会被静默拒绝。想真正拿到 144Hz，必须用 API 31 的三参版并传 `ALWAYS`。
@@ -419,22 +423,31 @@ void releaseRefresh(Surface surface) {
 ### 3.4 运行时监听刷新率变化
 
 ```c
-// 刷新率可能被系统改掉（省电策略、多窗口）。注册回调而不是假设它不变。
-#include <android/choreographer.h>
-static void on_refresh_rate(AChoreographer* c, int32_t rate_ns, void* data) {
-    // rate_ns 是周期（纳秒）；144Hz ≈ 6.94 ms
-    double hz = rate_ns > 0 ? 1e9 / (double)rate_ns : 0.0;
+// 刷新率可能被系统改掉（省电策略、多窗口、OEM 智能刷新率）。
+// 注册回调，不要假设它一直是你请求的值。
+#include <android/choreographer.h>   // 注意：头文件在 frameworks/native/include/android/
+
+// 已核实签名：typedef void (*AChoreographer_refreshRateCallback)(int64_t vsyncPeriodNanos, void* data);
+static void on_refresh_rate(int64_t vsync_period_ns, void* data) {
+    float hz = vsync_period_ns > 0 ? 1e9f / (float)vsync_period_ns : 0.0f;  // 6944444ns -> ~144Hz
+    *(float*)data = hz;
     // 用它校准 present pacing 的间隔
 }
-// API 31+：
+
+// API 30+（不是 31）
 AChoreographer* c = AChoreographer_getInstance();
-AChoreographer_registerRefreshRateCallback(c, on_refresh_rate, NULL);
+AChoreographer_registerRefreshRateCallback(c, on_refresh_rate, &g_current_hz);
 ```
+
+> **两个常见坑**：
+> 1. 回调签名是 `(int64_t vsyncPeriodNanos, void* data)`，**没有** `AChoreographer*` 第一个参数。
+> 2. 该 API 是 **API 30**，`AChoreographer_postFrameCallback64` 是 **API 29**（旧的 `postFrameCallback` 有 int 截断 bug，已废弃）。
+> 3. Java 侧的 `DisplayListener.onDisplayChanged` **不会**为刷新率变化触发（官方文档明确说明）。API 36 起要用 `DisplayManager.registerDisplayListener(executor, EVENT_TYPE_DISPLAY_REFRESH_RATE, listener)`；API < 36 就用上面的 native 回调。
 
 ### 3.5 adb 侧的手段（调试/兜底，不是产品方案）
 
 ```bash
-# 强制锁定最高/最低刷新率（标准 AOSP Settings.Global 键，ColorOS 上是否生效需实测）
+# 强制锁定最高/最低刷新率（AOSP Settings.System 键，注意是 system 不是 global；ColorOS 上是否生效需实测）
 adb shell settings put system peak_refresh_rate 144.0
 adb shell settings put system min_refresh_rate  144.0
 # 恢复自动
@@ -448,9 +461,13 @@ adb shell dumpsys display | grep -iE "refreshRate|modeId|mSupportedModes"
 adb shell dumpsys SurfaceFlinger | grep -iE "refresh|fps"
 ```
 
-`peak_refresh_rate` / `min_refresh_rate` 是 AOSP `Settings.Global` 的标准键，社区长期用于强制高刷（三星 S20 时代即以此法把 120Hz 锁到 96Hz，见 [IT之家报道](https://www.ithome.com/0/845/595.htm) 同源的社区做法；GitHub 上亦有成脚本化的整理，如 [melody_android](https://github.com/ionuttbara/melody_android)）。
+`peak_refresh_rate` / `min_refresh_rate` 是 **`Settings.System`**（**不是** `Settings.Global`）下的 `@hide @Readable` 键，注释语义为"用户选择的最低/最高刷新率，未设置时为 0"。社区长期用于强制高刷（三星 S20 时代即以此法把 120Hz 锁到 96Hz，见 [IT之家报道](https://www.ithome.com/0/845/595.htm) 同源的社区做法；GitHub 上亦有脚本化整理，如 [melody_android](https://github.com/ionuttbara/melody_android)）。
+
+> ⚠️ **命名空间陷阱**：必须用 `settings put system`，写成 `global` 不报错但也不生效。这是最常见的踩坑点之一。
 
 **但 ColorOS 是否尊重这两个键未核实**——国产 ROM 常自行接管刷新率策略，可能忽略或覆盖。必须真机实测，不能作为产品依赖。
+
+> 另注：`ro.surface_flinger.enable_frame_rate_override` / `ro.surface_flinger.game_default_frame_rate_override` 是**只读** `ro.*` 属性，**不能**用 `setprop` 在运行时修改，别浪费时间尝试。
 
 ---
 

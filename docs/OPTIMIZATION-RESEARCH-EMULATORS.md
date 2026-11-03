@@ -689,6 +689,16 @@ Qualcomm 官方最佳实践页（`PLAN.md` 引用）：
 - [docs.qualcomm.com/doc/80-78185-2/topic/mobile_best_practices.html](https://docs.qualcomm.com/doc/80-78185-2/topic/mobile_best_practices.html)
 - [docs.qualcomm.com/doc/80-78185-2/topic/gmem_loads.html](https://docs.qualcomm.com/doc/80-78185-2/topic/gmem_loads.html)
 
+**⭐ 如何*验证* UBWC 到底有没有生效（本项目最需要的一条）。**
+上面这些"哪些用法会关掉 UBWC"的说法，绝大多数来自二手资料，Qualcomm 的 Adreno GPU Developer Guide 本身抓不到（会 302 到 `qualcomm.com`，或返回空壳页）。但 Vulkan 提供了一个**规范内、可直接查询**的办法：
+
+`VK_EXT_image_compression_control`（[refpage](https://docs.vulkan.org/refpages/latest/refpages/source/VK_EXT_image_compression_control.html)）——创建 image 后调 `vkGetImageSubresourceLayout2EXT`，读 `VkImageCompressionPropertiesEXT`，它会报告**实际应用的压缩方案与压缩率**。
+
+**建议本项目加一个 `NX_UBWC_AUDIT=1` 开关**：在 `nvn_image.cpp` 创建每个 image 之后查一次，按格式/usage/flag 组合聚合统计，启动时打印一张表——"哪些 image 真的拿到了压缩、哪些没有"。这比反复猜 `GENERAL` / `MUTABLE_FORMAT` / `STORAGE` 哪个是元凶要可靠得多，而且**不需要 AGI**（AGI 在本项目的 Samsung 设备上曾经被 blocked，见 `docs/nvn/ANDROID.md`）。
+**未核实**：Adreno 840 的驱动是否暴露 `VK_EXT_image_compression_control`（Adreno 740 的 Phase 0 扩展列表里没有它，但这不代表 840 也没有）。
+
+**顺带一个免费的 UBWC 线索**：Mesa 把 UBWC 当作 **image 创建期的属性**，而不是运行期状态——这从 `TU_DEBUG=noubwc` 是个调试开关就能看出来。也就是说**一旦 image 用错 flag 创建出来，后面任何 layout 转换都救不回压缩**。所以本项目应该把 `NX_UBWC_AUDIT` 放在**创建点**，而不是帧末。
+
 ### 3.2 GMEM（tile memory）load/store——TBR 的核心
 
 Adreno 是 tile-based：每个 render pass 的 attachment 在 GMEM（on-chip）里渲染，pass 开始 load、结束 store 到 system memory。**每次 load/store 都是一次全屏带宽操作。**
@@ -710,7 +720,14 @@ a.storeOp = k[9] & kNoStore ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_S
 
 即**colour 永远 STORE**，depth 有条件 DONT_CARE。`PLAN.md` G5 提议用 per-submit lookahead 把"之后没人读的 depth"也设 DONT_CARE，估 `−0.3 to −1 ms`。
 
-**扩展**：`VK_QCOM_render_pass_store_ops`（Phase 0 在 Adreno 740 上**已检测到存在**，`MEASUREMENTS.md`：「Extensions present: ... `VK_QCOM_render_pass_store_ops`, `VK_EXT_load_store_op_none`」）。它允许把 store 变成 no-op（`VK_ATTACHMENT_STORE_OP_NONE_QCOM`），比 `DONT_CARE` 更强。**未核实**：确切语义我没读到官方 spec。registry：[registry.khronos.org/vulkan/specs/latest/man/html/VK_QCOM_render_pass_store_ops.html](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_QCOM_render_pass_store_ops.html)
+**扩展**：`VK_QCOM_render_pass_store_ops`（Phase 0 在 Adreno 740 上**已检测到存在**，`MEASUREMENTS.md`：「Extensions present: ... `VK_QCOM_render_pass_store_ops`, `VK_EXT_load_store_op_none`」）。它允许把 store 变成 no-op（`VK_ATTACHMENT_STORE_OP_NONE_QCOM`），比 `DONT_CARE` 更强。**已从 Khronos refpage 确认其要点**：内容"may not be written to memory, but prior contents are preserved"；若 render area 内确实产生了内容，那些内容变为 undefined。`STORE` "may force an implementation to… flush data to memory or to a higher level cache"，而 `NONE_QCOM` 可跳过这次 flush。**它已被 `VK_KHR_load_store_op_none` / Vulkan 1.3 的 `VK_ATTACHMENT_STORE_OP_NONE` 取代** → 本项目应优先用后者（跨厂商），QCOM 版当 fallback。
+来源：[VK_QCOM_render_pass_store_ops refpage](https://docs.vulkan.org/refpages/latest/refpages/source/VK_QCOM_render_pass_store_ops.html)
+
+**另外两条 Khronos 指南给出的硬性理由（比经验更权威，值得写进代码注释）**：
+- `VK_ATTACHMENT_LOAD_OP_CLEAR` "is significantly faster than using explicit clear commands like `vkCmdClearAttachments`, as it allows the hardware to initialize tile memory directly without any external memory traffic." → **本项目的 `nvn_clears.cpp` 把 pending clear 变成 `loadOp = CLEAR` 正是官方推荐做法**，✅。
+- MSAA resolve：Qualcomm 在 `VK_QCOM_rotated_copy_commands` 的 spec 里直接写 `vkCmdResolveImage2` "is very slow and extremely bandwidth intensive on Qualcomm's GPU architecture"，应改用 `pResolveAttachments`。**本项目目前 1x 用不到；将来若加 MSAA 必须走 `pResolveAttachments`。**
+
+来源：[Khronos Vulkan Guide — TBR Best Practices](https://docs.vulkan.org/guide/latest/tile_based_rendering_best_practices.html)
 
 ### 3.3 Render pass 合并与 barrier 精细化
 
@@ -817,7 +834,13 @@ README：
 
 来源：[github.com/bylaws/libadrenotools](https://github.com/bylaws/libadrenotools)
 
-**注意点**：README 明确说 libadrenotools **不是给终端用户装驱动的工具**（"This library is not for installing into Android and is not for end users"）。本项目 Launcher 有 "Import GPU driver" UI（`Launcher.java` 的 `driverDir()`），这是把开发者工具暴露给用户。**风险**：Turnip 在 Adreno 8xx 上的稳定性未知，且 Turnip **不支持 UBWC**（会抵消 3.1 的收益）。**未核实**：Turnip 是否支持 UBWC —— 未找到明确来源；Mesa freedreno 文档（[docs.mesa3d.org/drivers/freedreno.html](https://docs.mesa3d.org/drivers/freedreno.html) ）是主要参考。
+**注意点**：README 明确说 libadrenotools **不是给终端用户装驱动的工具**（"This library is not for installing into Android and is not for end users"）。本项目 Launcher 有 "Import GPU driver" UI（`Launcher.java` 的 `driverDir()`），这是把开发者工具暴露给用户。
+
+**关于 Turnip 与 UBWC 的更正（重要）**：我先前怀疑 Turnip 不支持 UBWC，**这是错的**。Mesa freedreno 文档里 `TU_DEBUG` 的调试选项包含 **`noubwc`**（与 `sysmem`、`gmem`、`nobin`、`forcebin`、`nolrz` 并列，用于"narrow down the hang cause"）——一个用来*关闭* UBWC 的调试开关，只有在 UBWC 默认开启时才存在（[docs.mesa3d.org/drivers/freedreno.html](https://docs.mesa3d.org/drivers/freedreno.html)）。所以 **Turnip 实现 UBWC**。Turnip 真正的代价是：**没有厂商扩展**（无 `VK_QCOM_*`、无 `VK_GOOGLE_display_timing` 保证、无 Adreno 专属快路径），以及整体性能通常低于专有 blob（未核实具体数字，没找到权威基准）。
+
+**Turnip 的另一条实用限制**：它按 workload 自动在 SYSMEM 与 GMEM 之间调优（`TU_AUTOTUNE_ALGO` = `bandwidth`（默认）/ `profiled` / `profiled_imm` / `prefer_sysmem` / `prefer_gmem`），且文档明确"small RPs always use SYSMEM mode as they generally don't benefit from GMEM rendering due to the overhead of tiling"。**对本项目的含义：不要把一帧切成很多个很小的 render pass**——Turnip 会退回 sysmem，整个 tiling 收益就没了。这条与 3.2 的"减少 pass 数量"是同一个方向，但理由更硬。
+
+**Turnip 的 LRZ 脆弱点**（同样适用于专有驱动的最佳实践）：Mesa 文档说明 "LRZ buffer could be formed only in one direction, changing depth comparison directions without disabling LRZ would lead to a malformed LRZ buffer"；a650 之前方向靠 CPU 跟踪，"it's impossible to reuse LRZ between render passes"；a7xx 才有双向 LRZ（[docs.mesa3d.org/drivers/freedreno/hw/lrz.html](https://docs.mesa3d.org/drivers/freedreno/hw/lrz.html)）。**实践规则：一个 render pass 内保持单一、一致的 depth `VkCompareOp`。**
 
 ### 3.8 KGSL turbo（已实现，默认关闭）
 
@@ -840,6 +863,28 @@ void gpu_turbo() {
 ```
 
 **`KGSL_PROP_PWRCTRL = 0xE`，`IOCTL_KGSL_SETPROPERTY = _IOW(0x09, 0x32, ...)`，值 0 = 关闭 driver 电源控制（锁最高频）。** 实现直接对着内核 UAPI 写，不依赖 adrenotools。
+
+**与 libadrenotools 的对照（已核实源码，`src/driver.cpp`）**——本项目的实现与上游语义一致，但上游有两个细节值得抄：
+
+```c
+void adrenotools_set_turbo(bool turbo) {
+    uint32_t enable{turbo ? 0U : 1U};          // ← turbo 写 0，不是 1
+    kgsl_device_getproperty prop{ .type = KGSL_PROP_PWRCTRL,
+                                  .value = (void*)&enable, .sizebytes = sizeof(enable) };
+    int kgslFd{open("/dev/kgsl-3d0", O_RDWR)};
+    if (kgslFd < 0) return;                    // ← 静默失败，void 返回
+    ioctl(kgslFd, IOCTL_KGSL_SETPROPERTY, &prop);
+    close(kgslFd);                             // ← 每次调用都开/关 fd
+}
+```
+
+- **`turbo` 写 `0`**（该属性是"power-control **enable**"，0 即"不限制"）。本项目的 `enable = turbo ? 0 : 1` 与此一致，✅。
+- **返回 `void`、无错误上报、`/dev/kgsl-3d0` 打不开就静默 no-op**。本项目有 `log(...)`，比上游好。
+- **上游每次调用都 `close(fd)`**；本项目在 turbo 模式下**故意不 close**（"The descriptor stays open: the driver ties the setting to it"）。这是本项目的**有意偏离**，注释也写明了理由。**未核实**：设置到底是否绑定到 fd 的生命周期——两种说法都无法从 UAPI 头文件直接证实。**建议：按"绑定 fd"实现（保守），但在 `gpu_turbo()` 里加一条注释说明这是经验观察而非文档保证。**
+
+**权限现实**：`/dev/kgsl-3d0` 在量产机上是 root/vendor-only，普通 app 会拿到 `EACCES`——这正是上游把它做成 `void` 返回的原因。**所以 `NX_GPU_TURBO` 在普通用户设备上很可能根本无效**，这也进一步支持 4.4 ㉑ 的"降级为纯诊断"结论。
+
+**更现代的替代**：`VK_QCOM_queue_perf_hint`（[提案](https://docs.vulkan.org/features/latest/features/proposals/VK_QCOM_queue_perf_hint.html)）用 `vkQueueSetPerfHintQCOM(queue, &VkPerfHintInfoQCOM{type, scale})` 取代 ioctl hack，`VkPerfHintTypeQCOM ∈ {DEFAULT, FREQUENCY_MIN, FREQUENCY_MAX, FREQUENCY_SCALED}`。hint 是归一化的（不是绝对频率）、在 queue 生命周期内持续、并在多个活跃 queue 之间排序（`FREQUENCY_MAX` 最高）。**这是"强制最高频"的官方正路**，且不需要 root。**未核实**：Adreno 840 的驱动是否暴露该扩展。
 
 **重要警告（代码注释已记录）**：
 > "The setting outlives the process (the GPU stayed at its top clock with the game closed)"
@@ -1176,11 +1221,15 @@ void gpu_turbo() {
 3. **Ryujinx 里真正读 `render_scale` 的 GLSL/SPIR-V 生成点**——已核实的是 support buffer 布局（`SupportBuffer.cs`）、写入方（`UpdateRenderScale` / `UpdateRenderScaleFragmentCount`）和 viewport/scissor 路径；**消费端未读到**。
 4. **Ryujinx `SupportBufferUpdater.cs`**——按猜测路径 404，未读到。
 5. **yuzu 的 `vk_image.cpp` / `blit_screen.frag`**——这两个文件在该树中**不存在**（相关代码在 `vk_texture_cache.cpp` 与 `src/video_core/host_shaders/`），不是"没读到"而是"没有"。
-6. **`VK_QCOM_render_pass_store_ops` 与 `VK_EXT_load_store_op_none` 的确切语义差异**——只给了 registry 链接，未读 spec 正文。
-7. **`GENERAL` layout 是否影响 Adreno UBWC**——未找到明确来源。
-8. **Turnip 是否支持 UBWC**——未找到明确来源。
-9. **Swappy 是否要求 `setWindow`/`setSwapIntervalNS` 与 swapchain 创建同线程**——文档未明说。
-10. **`notifyWorkloadSpike` 对 DVFS 的实际提速幅度（20-40%）**——纯推测。
-11. **Adreno 840 是否补上 `VK_KHR_present_wait` / `VK_EXT_graphics_pipeline_library`**——本项目只在 Adreno 740 上测过扩展列表。
-12. **进程退出后 KGSL `PWRCTRL` 是否自动恢复**——本项目注释只说"设置活得比进程久"，未说是否自动恢复。
-13. **OnePlus Pad 3 Pro 的 144Hz 面板是否支持 90Hz 模式**——未核实。这是 2.1 方案 (a) 的前提，**必须在真机上用 `Display.getSupportedModes()` 确认**。
+6. **`GENERAL` layout 对 Adreno 的精确代价模型**——没找到任何 Qualcomm 公布的数字。可辩护的说法只有：TBDR 上 attachment 在 pass 期间住在 tile memory，layout 本身不如"驱动能否保持压缩"重要；`GENERAL` 会堵死基于 layout 的优化，且是 UBWC 被关掉的常见嫌疑。
+7. **UBWC 被关掉的精确条件清单**——Qualcomm 的 Adreno GPU Developer Guide 抓不到（302 到 `qualcomm.com` 或空壳页）。`VK_IMAGE_USAGE_STORAGE_BIT` / `VK_IMAGE_TILING_LINEAR` / 非 UBWC 兼容格式 / `MUTABLE_FORMAT` 跨不兼容格式类，这些是**合理但未证实**的嫌疑。→ **改用 3.1 的 `VK_EXT_image_compression_control` 直接查询，别再猜。**
+8. **Swappy 是否要求 `setWindow`/`setSwapIntervalNS` 与 swapchain 创建同线程**——文档未明说。
+9. **`notifyWorkloadSpike` 对 DVFS 的实际提速幅度（20-40%）**——纯推测。
+10. **Adreno 840 是否补上 `VK_KHR_present_wait` / `VK_EXT_graphics_pipeline_library` / `VK_EXT_image_compression_control` / `VK_QCOM_queue_perf_hint`**——本项目只在 Adreno 740 上测过扩展列表。
+11. **进程退出后 KGSL `PWRCTRL` 是否自动恢复**，以及**该设置是否真的绑定到 fd 生命周期**——两种说法都无法从 UAPI 头文件直接证实。
+12. **OnePlus Pad 3 Pro 的 144Hz 面板是否支持 90Hz 模式**——未核实。这是 2.1 方案 (a) 的前提，**必须在真机上用 `Display.getSupportedModes()` 确认**。
+13. **`/dev/kgsl-3d0` 在目标设备上是否可打开**——量产机通常 root/vendor-only，普通 app 拿 `EACCES`。这决定了 4.4 ㉑ 的结论是否成立。
+
+**已在本轮被推翻/更正的两条（保留记录，避免团队重犯）**：
+- ~~Turnip 不支持 UBWC~~ → **错**。Mesa 提供 `TU_DEBUG=noubwc` 用来*关闭* UBWC，说明默认开启。已在 3.7 更正。
+- ~~`adrenotools_set_turbo(true)` 写 1~~ → **错**。源码是 `uint32_t enable{turbo ? 0U : 1U}`，turbo 写 **0**（该属性是 power-control *enable*）。已在 3.8 用源码原文核实，并确认本项目实现一致。

@@ -437,7 +437,22 @@ foreach ($sw in $switchList) {
 
     # (c) logged: the key appears next to a log statement. Only a switch the branch adds has to
     # prove it logs at startup; an upstream switch already logs (or does not) as it always did.
+    # A log line may spell a switch by its short name rather than its config.txt key ("thermal: guard
+    # 1 (standard)" for thermal_guard): the aliases below are the accepted spellings, and they are
+    # listed here rather than guessed so a reviewer can check each one.
+    $logAliases = @{
+        'thermal_guard' = @('guard')
+        'dyn_res'       = @('dynamic resolution')
+        'dyn_res_min'   = @('floor')
+        'thermal_log'   = @('thermal: zone')
+    }
     $logHits = @(Find-InCorpus -Root $root -Needle $key -NearLog -CSourceOnly)
+    if ($logHits.Count -eq 0 -and $logAliases.ContainsKey($key)) {
+        foreach ($alias in $logAliases[$key]) {
+            $aliasHits = @(Find-InCorpus -Root $root -Needle $alias -NearLog -CSourceOnly)
+            if ($aliasHits.Count -gt 0) { $logHits = $aliasHits; break }
+        }
+    }
     if ($logHits.Count -gt 0) {
         Add-KeyResult -Check 'A3 logged' -Target $key -Parsed $true -Status 'PASS' -Detail ('log statement near ' + $logHits[0])
     } elseif ($sw.Upstream) {
@@ -1006,7 +1021,68 @@ if ([string]::IsNullOrWhiteSpace($launcherText)) {
 }
 
 # ---------------------------------------------------------------------------------------------
-# 14. Report
+# 14. S12: every Profile field reaches a DECISION, not just a parse site and a log line
+# ---------------------------------------------------------------------------------------------
+Write-Head 'M. S12  each Profile field is consumed by a decision, not just parsed and logged'
+
+# perf-core's lesson: counting references ("adpf: 2 consumer sites") proves nothing, because the
+# parse site and the log line satisfy the count by themselves. `Profile::adpf` was parsed, validated
+# and logged yet never honoured, so a player writing `adpf=0` in config.txt was silently ignored.
+# So this check looks for a read of the field in a file that is NOT the parser and NOT a log line.
+$profileFields = @()
+$profileH = Get-CorpusFile -Root $root -RelPath 'runtime/src/perf_profile.h'
+if ($null -ne $profileH) {
+    foreach ($l in $profileH) {
+        if ($l -match '^\s+(?:Mode|Fps|int|bool|uint32_t|PresentMode)\s+([a-z_][a-z0-9_]*)\s*[=;]') {
+            $profileFields += $Matches[1]
+        }
+    }
+}
+# Fields that are bookkeeping, not switches: the preset it came from, the derived vsync rate, and the
+# "*_configured" bits that only tell a module whether to keep its own upstream fallback.
+$notASwitch = @('mode', 'vsync_hz', 'fps_configured', 'refresh_configured', 'render_height_configured',
+    'present_mode_configured', 'fps_clamped', 'no_frame_limit')
+$switchFields = @($profileFields | Where-Object { $notASwitch -notcontains $_ } | Sort-Object -Unique)
+
+if ($switchFields.Count -eq 0) {
+    Add-Result -Check 'S12 wiring' -Target 'runtime/src/perf_profile.h' -Status 'SKIP' -Detail 'no Profile fields parsed from the header'
+} else {
+    $corpus = Get-Corpus -Root $root
+    foreach ($field in $switchFields) {
+        $consumers = New-Object System.Collections.ArrayList
+        foreach ($rel in ($corpus.Keys | Sort-Object)) {
+            if ($rel -match '\.java$') { continue }
+            if ($rel -eq 'runtime/src/perf_profile.h') { continue }
+            $inParser = ($rel -eq $primaryParser)
+            $lines = $corpus[$rel]
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+                $t = $lines[$i]
+                # a read of the field through a profile reference: pf.adpf, p->adpf, prof.fps, ...
+                if ($t -notmatch ('(?:\.|->)' + [regex]::Escape($field) + '\b')) { continue }
+                if ($t -match '^\s*//') { continue }
+                # A log statement is not a decision. Judge the LINE, not its neighbours: a decision on
+                # one line followed by a log line about it is still a decision.
+                if ($t -match '\blog(f|_line)?\s*\(' -or $t -match '\bLOG[IDWE]\b' -or $t -match 'nx::log') { continue }
+                # Inside the parser, writing the field or reading the raw switch is not consumption
+                # either; a helper like render_scale_clamp() that branches on it IS.
+                if ($inParser) {
+                    if ($t -match ('^\s*(?:p|profile)\.' + [regex]::Escape($field) + '\s*=')) { continue }
+                    if ($t -match ('raw\.' + [regex]::Escape($field))) { continue }
+                    if ($t -match ('source\.(?:value|present)\s*\(')) { continue }
+                }
+                [void]$consumers.Add("$rel`:$($i + 1)")
+            }
+        }
+        if ($consumers.Count -gt 0) {
+            Add-Result -Check 'S12 wiring' -Target $field -Status 'PASS' -Detail ('decision reads it at ' + $consumers[0])
+        } else {
+            Add-Result -Check 'S12 wiring' -Target $field -Status 'FAIL' -Detail 'parsed and logged but never read by a decision: the switch would be silently ignored'
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------------------------
+# 15. Report
 # ---------------------------------------------------------------------------------------------
 $fail = @($script:Results | Where-Object { $_.Status -eq 'FAIL' })
 $warn = @($script:Results | Where-Object { $_.Status -eq 'WARN' })

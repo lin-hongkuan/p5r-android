@@ -1,0 +1,387 @@
+# Build the P5R native-execution (NCE) arm64 APK in the cloud, so the fork can be built without a local Android SDK.
+#
+# The APK this produces is the same one `bash android/build_apk.sh --game p5r --nce` makes locally: it holds no game
+# code (NX_NCE: the runtime runs the exefs of the player's own dump), only libp5r.so, libp5rimport.so, libadrenotools'
+# four hook libraries and — when the harness job succeeded — libspirvharness.so.
+#
+# Two jobs on purpose:
+#   harness  builds libspirvharness.so (the shader translator, .NET 10 NativeAOT for android-arm64). It is heavy and
+#            network-dependent, so it is allowed to fail: the APK job then builds WITHOUT it. The APK still installs
+#            and the game still starts once the player has a spirv/ folder; only the on-device "Prepare the game" step
+#            cannot translate shaders. A loud warning says so, in the log and in the artifact's README.
+#   apk      installs the SDK/NDK, and calls the very same android/build_apk.sh the developer runs locally. Everything
+#            that differs from a local build is provisioning (SDK, headers, caches) — never packaging, so CI and the
+#            local path cannot drift apart.
+#
+# Nothing here commits or uploads game data, keys or private/ content: the APK is built from the repository only, and
+# the signing key is the throwaway Android debug key.
+name: build-apk
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_harness:
+        description: 'Also build libspirvharness.so (shader translator; slow, needs NuGet)'
+        type: boolean
+        default: true
+      release_build:
+        description: 'Public build (NX_RELEASE: no nx.log file, logcat only)'
+        type: boolean
+        default: false
+  push:
+    branches:
+      - 'feat/**'
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # The exact versions android/build_apk.sh and build_apk.ps1 expect. Changing one of them means changing both scripts.
+  NDK_VERSION: '28.2.13676358'
+  BUILD_TOOLS_VERSION: '35.0.0'
+  PLATFORM_VERSION: 'android-35'
+  # runtime/src/vk_gen.h was generated from the 1.4.357 headers; older ones miss types and fail to compile
+  # (docs/BUILD.md, Troubleshooting).
+  VULKAN_HEADERS_VERSION: '1.4.357'
+  # The Android command-line tools (sdkmanager). Any recent one works; this is the current stable build.
+  CMDLINE_TOOLS_URL: 'https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip'
+  # .NET SDK for the NativeAOT shader translator (tools/maxwell/spirv_harness targets net10.0).
+  DOTNET_VERSION: '10.0.x'
+  # The Ryubing checkout the translator is built from (docs/nvn/TRANSLATOR.md pins this commit).
+  RYUBING_COMMIT: 'a82350bb77'
+  RYUBING_URL: 'https://codeberg.org/Software_arch/Ryubing/archive/a82350bb77.tar.gz'
+
+jobs:
+  # ------------------------------------------------------------------------------------------------------------------
+  # The shader translator. Optional: a failure here must not cost us the APK.
+  # ------------------------------------------------------------------------------------------------------------------
+  harness:
+    name: libspirvharness.so (NativeAOT, optional)
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_harness }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install patch and unzip
+        # build_harness_android.sh needs both (it applies the translator's patches and unpacks the NDK).
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq patch unzip
+
+      - name: Fetch the Ryubing translator source
+        # Never committed: it lives in private/ like the game data (docs/nvn/TRANSLATOR.md).
+        run: |
+          set -euo pipefail
+          mkdir -p private/third_party/ryubing
+          curl -sSL -o /tmp/ryubing.tar.gz "${RYUBING_URL}"
+          tar -xzf /tmp/ryubing.tar.gz -C private/third_party/ryubing --strip-components=1
+          test -d private/third_party/ryubing/src/Ryujinx.Graphics.Shader
+          echo "ryubing ${RYUBING_COMMIT} in place"
+
+      - name: Make the repository visible at /src
+        # games/p5r/tools/build_harness_android.sh is written to run inside Docker with the repo mounted at /src, so it
+        # hardcodes /src for its NDK and its output directory. A symlink lets the unmodified script run directly on the
+        # runner (which is already the Linux host NativeAOT for linux-bionic needs) instead of in a container.
+        run: |
+          set -euo pipefail
+          sudo ln -sfn "$GITHUB_WORKSPACE" /src
+          test -d /src/games/p5r/tools
+          test -d /src/tools/maxwell/spirv_harness
+
+      - name: Restore the NDK the harness script expects
+        # build_harness_android.sh downloads NDK r28c itself unless private/third_party/android-ndk-r28c-linux exists.
+        # r28c is 28.2.13676358, the same NDK the APK job installs, so it is cached rather than re-downloaded per run.
+        id: ndk-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/private/third_party/android-ndk-r28c-linux
+          key: harness-ndk-r28c
+
+      - name: Download NDK r28c for the harness (cache miss only)
+        if: steps.ndk-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p private/third_party
+          curl -sSL -o /tmp/ndk.zip "https://dl.google.com/android/repository/android-ndk-r28c-linux.zip"
+          unzip -q /tmp/ndk.zip -d /tmp/ndk
+          mv /tmp/ndk/android-ndk-r28c private/third_party/android-ndk-r28c-linux
+          rm -rf /tmp/ndk /tmp/ndk.zip
+          test -x private/third_party/android-ndk-r28c-linux/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
+
+      - name: Build libspirvharness.so
+        # The repository's own script, unmodified: the same thing a developer runs in Docker, run directly on the
+        # runner (the runner is already the Linux host that NativeAOT for linux-bionic needs).
+        run: |
+          set -euo pipefail
+          sh games/p5r/tools/build_harness_android.sh
+          test -f private/build/spirv_harness_android/libspirvharness.so
+          ls -la private/build/spirv_harness_android/libspirvharness.so
+          file private/build/spirv_harness_android/libspirvharness.so || true
+
+      - name: Upload the harness
+        uses: actions/upload-artifact@v4
+        with:
+          name: spirv-harness
+          path: private/build/spirv_harness_android/libspirvharness.so
+          if-no-files-found: error
+          retention-days: 30
+
+  # ------------------------------------------------------------------------------------------------------------------
+  # The APK.
+  # ------------------------------------------------------------------------------------------------------------------
+  apk:
+    name: p5r NCE arm64 APK (ubuntu-latest)
+    needs: harness
+    # `always()`: the APK is the deliverable, so build it even when the harness failed or was skipped.
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install JDK 21
+        # apksigner and d8 need a JDK; javac builds games/p5r/java. 21 is what docs/BUILD.md uses for the Android build.
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install build tools
+        # cmake and ninja drive the NDK build; zip packs the APK; the rest are conveniences for the log.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build zip unzip file
+
+      - name: Restore the Android SDK
+        # ~2.5 GB with the NDK. Keyed by the exact versions: bumping one of them starts a fresh cache instead of
+        # silently reusing a stale SDK.
+        id: sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/android-sdk
+          key: android-sdk-${{ runner.os }}-ndk${{ env.NDK_VERSION }}-bt${{ env.BUILD_TOOLS_VERSION }}-${{ env.PLATFORM_VERSION }}
+
+      - name: Install the Android SDK, NDK and build-tools
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          sdk="$PWD/android-sdk"
+          mkdir -p "$sdk/cmdline-tools"
+          curl -sSL -o /tmp/cmdline-tools.zip "${CMDLINE_TOOLS_URL}"
+          unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools
+          # sdkmanager insists on this exact layout: cmdline-tools/latest/bin/sdkmanager.
+          mv /tmp/cmdline-tools/cmdline-tools "$sdk/cmdline-tools/latest"
+          rm -rf /tmp/cmdline-tools /tmp/cmdline-tools.zip
+          export ANDROID_HOME="$sdk"
+          export PATH="$sdk/cmdline-tools/latest/bin:$PATH"
+          # The SDK licences are accepted here, in CI only: no interactive prompt is possible.
+          yes | sdkmanager --licenses > /dev/null
+          sdkmanager --install \
+            "ndk;${NDK_VERSION}" \
+            "build-tools;${BUILD_TOOLS_VERSION}" \
+            "platforms;${PLATFORM_VERSION}" \
+            "platform-tools"
+          # Prove the layout android/build_apk.sh expects exists before the build step needs it.
+          test -d "$sdk/ndk/${NDK_VERSION}"
+          test -x "$sdk/build-tools/${BUILD_TOOLS_VERSION}/aapt2"
+          test -f "$sdk/platforms/${PLATFORM_VERSION}/android.jar"
+
+      - name: Provide the Vulkan headers
+        # VULKAN_SDK must name a directory with Include/ (capital I) holding the 1.4.357 headers: that is what
+        # CMakeLists.txt's "${NX_VULKAN_SDK}/Include" include path expects (docs/BUILD.md, Android step 2).
+        run: |
+          set -euo pipefail
+          curl -sSL -o /tmp/vk.tar.gz \
+            "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v${VULKAN_HEADERS_VERSION}.tar.gz"
+          tar -xzf /tmp/vk.tar.gz -C /tmp
+          mkdir -p private/third_party/vk-android
+          cp -r "/tmp/Vulkan-Headers-${VULKAN_HEADERS_VERSION}/include" private/third_party/vk-android/Include
+          rm -rf /tmp/vk.tar.gz "/tmp/Vulkan-Headers-${VULKAN_HEADERS_VERSION}"
+          test -f private/third_party/vk-android/Include/vulkan/vulkan.h
+          grep -q "define VK_HEADER_VERSION ${VULKAN_HEADERS_VERSION##*.}" \
+            private/third_party/vk-android/Include/vulkan/vulkan_core.h
+
+      - name: Cache the debug keystore
+        # Restored before the build so the same key signs every run; saved afterwards from the collected copy.
+        id: keystore-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.debug-keystore/debug.keystore
+          key: android-debug-keystore-v1
+
+      - name: Install the restored debug keystore
+        # android/build_apk.sh --nce creates ~/.android/debug.keystore when it is missing; restore the cached one into
+        # that exact place so the signature is stable across runs.
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.android"
+          if [ -f .debug-keystore/debug.keystore ]; then
+            cp .debug-keystore/debug.keystore "$HOME/.android/debug.keystore"
+            echo "reused the cached debug keystore"
+          else
+            echo "no cached keystore: the build will create one"
+          fi
+
+      - name: Download libspirvharness.so (if the harness job produced one)
+        id: harness
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: spirv-harness
+          path: private/build/spirv_harness_android
+
+      - name: Report whether the APK will carry the shader translator
+        run: |
+          set -euo pipefail
+          if [ -f private/build/spirv_harness_android/libspirvharness.so ]; then
+            echo "libspirvharness.so present: the APK can translate shaders on the device." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### WARNING: the APK has no libspirvharness.so"
+              echo ""
+              echo "The shader translator (the \`harness\` job) did not produce a library, so this APK **cannot run"
+              echo "\"Prepare the game\"**: the import checks the dump and extracts the shaders, but the Maxwell -> SPIR-V"
+              echo "translation step fails with \"the shader translator is missing\"."
+              echo ""
+              echo "The game itself still starts if the player already has a \`spirv/\` folder (or copies one in)."
+              echo "To get a complete APK, re-run this workflow with \`build_harness: true\`, or build"
+              echo "\`libspirvharness.so\` locally with \`games/p5r/tools/build_harness_android.sh\` and drop it into"
+              echo "\`private/build/spirv_harness_android/\` before running \`android/build_apk.sh --game p5r --nce\`."
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=APK without shader translator::libspirvharness.so is missing; 'Prepare the game' cannot translate shaders. See the job summary."
+          fi
+
+      - name: Build the APK
+        # The one build step, and it is the repository's own script: local and CI packaging cannot drift.
+        env:
+          ANDROID_HOME: ${{ github.workspace }}/android-sdk
+          VULKAN_SDK: ${{ github.workspace }}/private/third_party/vk-android
+        run: |
+          set -euo pipefail
+          # Public build: NX_RELEASE turns the nx.log file and the file-triggered diagnostics off. The script only
+          # configures a build directory that does not exist yet, so a pre-configure with the flag set is what the
+          # script then builds — the same two commands build_apk.ps1 -Release runs.
+          if [ "${{ inputs.release_build }}" = "true" ]; then
+            cmake -S . -B private/p5r/ba_nce -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/${NDK_VERSION}/build/cmake/android.toolchain.cmake" \
+              -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 -DANDROID_STL=c++_static \
+              -DNX_GAME=p5r -DNX_NCE=ON -DNX_RELEASE=ON
+          fi
+          bash android/build_apk.sh --game p5r --nce
+          test -f private/p5r/apk_nce/p5r.apk
+
+      - name: Inspect the APK
+        run: |
+          set -euo pipefail
+          sdk="$PWD/android-sdk"
+          bt="$sdk/build-tools/${BUILD_TOOLS_VERSION}"
+          apk=private/p5r/apk_nce/p5r.apk
+          ls -l "$apk"
+          "$bt/apksigner" verify --print-certs "$apk"
+          echo "--- native libraries ---"
+          unzip -l "$apk" | grep -E 'lib/arm64-v8a/|classes.dex' || true
+          echo "--- sha256 ---"
+          sha256sum "$apk"
+          {
+            echo "### p5r NCE APK"
+            echo ""
+            echo "- size: $(du -h "$apk" | cut -f1)"
+            echo "- sha256: \`$(sha256sum "$apk" | cut -d' ' -f1)\`"
+            echo "- commit: \`${GITHUB_SHA}\`"
+            echo ""
+            echo '```'
+            unzip -l "$apk" | grep -E 'lib/arm64-v8a/|classes.dex' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write the artifact README
+        # Shipped next to the APK so the download explains itself.
+        run: |
+          set -euo pipefail
+          {
+            echo "# p5r NCE APK"
+            echo ""
+            echo "Built from commit \`${GITHUB_SHA}\` on $(date -u '+%Y-%m-%d %H:%M UTC')."
+            echo ""
+            echo "## Install"
+            echo ""
+            echo '```'
+            echo "adb install -r p5r.apk"
+            echo '```'
+            echo ""
+            echo "Or copy it to the tablet and open it (allow \"install unknown apps\" for the file manager)."
+            echo "It is signed with the Android debug key: uninstall an earlier build if the signature differs."
+            echo ""
+            echo "## Game data (not in this APK)"
+            echo ""
+            echo "Put your own dump in \`Internal storage/Persona 5 Royal\`: \`exefs/\`, \`extract/romfs/\`, \`prod.keys\`,"
+            echo "then use \"Prepare the game\" in the launcher."
+            echo ""
+            if [ -f private/build/spirv_harness_android/libspirvharness.so ]; then
+              echo "This APK includes \`libspirvharness.so\`: \"Prepare the game\" can translate the shaders."
+            else
+              echo "**This APK does NOT include \`libspirvharness.so\`.** \"Prepare the game\" will fail at the shader"
+              echo "translation step; the game only starts if a \`spirv/\` folder is already present."
+            fi
+            echo ""
+            echo "See \`docs/BUILD-FORK.md\` in the repository."
+          } > private/p5r/apk_nce/README.md
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: p5r-nce-apk
+          path: |
+            private/p5r/apk_nce/p5r.apk
+            private/p5r/apk_nce/README.md
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Collect the debug keystore
+        # So a later build (or a local one) can sign with the same key and update over the air instead of colliding
+        # with INSTALL_FAILED_UPDATE_INCOMPATIBLE. A debug key, not a secret. Copied into the workspace because both
+        # actions/cache and actions/upload-artifact need a path inside it.
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p .debug-keystore
+          if [ -f "$HOME/.android/debug.keystore" ]; then
+            cp "$HOME/.android/debug.keystore" .debug-keystore/debug.keystore
+            echo "keystore collected"
+          else
+            echo "no keystore to collect"
+          fi
+
+      - name: Upload the debug keystore
+        # The task's deliverable: the generated keystore is downloadable, so a local build can be signed with it too.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-keystore
+          path: .debug-keystore/debug.keystore
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload the build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: |
+            private/p5r/apk_nce/
+            private/p5r/ba_nce/CMakeCache.txt
+            private/p5r/ba_nce/.ninja_log
+          if-no-files-found: ignore
+          retention-days: 7
