@@ -10,6 +10,7 @@
 // resolution that pumps up and down, or as "2K" silently doing nothing.
 #include "perf_thermal.h"
 
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
