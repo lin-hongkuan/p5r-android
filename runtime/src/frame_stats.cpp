@@ -227,19 +227,22 @@ void frame_thread_tick(int role) {
 
 void frame_presented() {
     frame_thread_tick(0);
-    static uint64_t last = 0, n = 0, bins[7] = {};
+    static uint64_t last = 0, n = 0, bins[8] = {};
     uint64_t now = monotonic_ns();
     if (last) {
         double ms = double(now - last) / 1e6;
-        bins[ms < 14 ? 0 : ms < 19 ? 1 : ms < 25 ? 2 : ms < 31 ? 3 : ms < 36 ? 4 : ms < 50 ? 5 : 6]++;
+        // The buckets resolve the rates this fork targets. The old set (<14, 14-19, 19-25, ...) put 144, 120, 90 and
+        // 60 fps all in one "<14 ms" bin, which made tuning the 90/120 presets blind: an 11.1 ms interval and a 16.7 ms
+        // one were indistinguishable in the log. 8 bins, edges at 9/12/15/18/24/35/100 ms.
+        bins[ms < 9 ? 0 : ms < 12 ? 1 : ms < 15 ? 2 : ms < 18 ? 3 : ms < 24 ? 4 : ms < 35 ? 5 : ms < 100 ? 6 : 7]++;
     }
     last = now;
     if (++n % 600) return;
-    log("present intervals over 600: <14 ms %llu, 14-19 %llu, 19-25 %llu, 25-31 %llu, 31-36 %llu, 36-50 %llu, "
-        "more %llu",
+    log("present intervals over 600: <9 ms (144+ fps) %llu, 9-12 (120-83) %llu, 12-15 (83-67) %llu, "
+        "15-18 (67-56) %llu, 18-24 (56-42) %llu, 24-35 (42-29) %llu, 35-100 %llu, >100 ms (stutter) %llu",
         (unsigned long long)bins[0], (unsigned long long)bins[1], (unsigned long long)bins[2],
         (unsigned long long)bins[3], (unsigned long long)bins[4], (unsigned long long)bins[5],
-        (unsigned long long)bins[6]);
+        (unsigned long long)bins[6], (unsigned long long)bins[7]);
     for (auto& b : bins) b = 0;
 }
 
