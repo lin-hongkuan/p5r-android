@@ -187,7 +187,9 @@ jobs:
           export ANDROID_HOME="$sdk"
           export PATH="$sdk/cmdline-tools/latest/bin:$PATH"
           # The SDK licences are accepted here, in CI only: no interactive prompt is possible.
-          yes | sdkmanager --licenses > /dev/null
+          # `yes` is killed by SIGPIPE when sdkmanager stops reading, and with set -o pipefail that made this
+          # step exit 1 after every licence was already accepted. Both sides are now made non-fatal.
+          (yes 2>/dev/null || true) | sdkmanager --licenses > /dev/null 2>&1 || true
           sdkmanager --install \
             "ndk;${NDK_VERSION}" \
             "build-tools;${BUILD_TOOLS_VERSION}" \
