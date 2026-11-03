@@ -753,9 +753,7 @@ static const char* const kDataProbe = "/analysis/main.bin";
 #endif
 static bool has_data(const std::string& root) { return access((root + kDataProbe).c_str(), R_OK) == 0; }
 
-extern "C" void android_main(android_app* app) {
-    using namespace nx::plat;
-    g_app = app;
+PLACEHOLDER_NOT_FOUND
     // Game data: Internal storage/<game title> (put there by the player, needs all-files access) or the app's own
     // external files folder (adb push).
     // The folder picked on the home screen (games/<game>/java Home.java writes <files>/data_root.txt) comes first.
