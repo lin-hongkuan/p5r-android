@@ -83,10 +83,15 @@ Device detect_device() {
 
 int apply_device_tuning(const Device& d) {
     int n = 0;
-    if (d.target) {
-        // The configuration this fork was built for: the game renders 1440p, the panel is asked for 90 Hz so the
-        // present interval can be 1, MAILBOX keeps latency low at 90, dynamic resolution protects the frame rate
-        // once the tablet warms up, and the thermal guard stays at its standard setting.
+    // Changed after a launch crash report: the first build applied the whole 2K90 combination automatically, which made
+    // "does the app start" and "does 2K90 work" one and the same experiment -- impossible to tell apart when it
+    // crashed. The device profile now detects and recommends; it applies the aggressive combination only when
+    // `device_tune=apply` (or NX_DEVICE_TUNE_APPLY=1) is written. The same combination is one tap away in the
+    // launcher's "一键 2K90", where the player can also undo it.
+    const std::string mode = nx::plat::setting("device_tune");
+    const char* env = std::getenv("NX_DEVICE_TUNE_APPLY");
+    const bool apply = mode == "apply" || (env && env[0] == '1');
+    if (d.target && apply) {
         n += put("perf_mode", "2k90");
         n += put("render_height", "1440");
         n += put("allow_over_1080", "1");
@@ -99,18 +104,11 @@ int apply_device_tuning(const Device& d) {
         n += put("NX_RENDER_RES", "2560x1440");
         n += put("resolution", "2560x1440");
         n += put("NX_HUD_RES", "1440");
-    } else if (d.flagship_8xx) {
-        // Other Adreno 8xx hardware: the picture-quality preset only. No 90 Hz request and no resolution above 1080p,
-        // because those were tuned on the target tablet and would be a guess elsewhere.
-        n += put("perf_mode", "quality");
-        n += put("render_height", "1080");
-        n += put("thermal_guard", "1");
-        n += put("dyn_res", "1");
     }
-    nx::log("perf: device soc=%s model=%s adreno=%d -> %s, %d setting(s) from the device profile",
+    nx::log("perf: device soc=%s model=%s adreno=%d -> %s; %s",
             d.soc[0] ? d.soc : "?", d.model[0] ? d.model : "?", d.adreno,
-            d.target ? "target tablet (2K90)" : d.flagship_8xx ? "high-tier Adreno (quality)" : "not tuned (upstream)",
-            n);
+            d.target ? "target tablet (2K90 available)" : d.flagship_8xx ? "high-tier Adreno" : "not tuned (upstream)",
+            n ? "device profile applied" : "nothing applied: press 2K90 in the launcher, or write device_tune=apply");
     return n;
 }
 

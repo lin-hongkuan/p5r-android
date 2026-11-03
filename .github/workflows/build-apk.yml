@@ -157,6 +157,18 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      - name: Check the launcher language table
+        # Lang.put() throws IllegalArgumentException when a row carries the wrong number of translations, and that
+        # throw happens inside a static initialiser: the app then dies with ExceptionInInitializerError the instant the
+        # launcher opens. javac cannot catch it (the call is legal Java) and neither d8 nor apksigner care, so a broken
+        # table still produced a valid, installable APK that crashed on the tablet. Run it here instead.
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/langcheck
+          javac -nowarn -encoding UTF-8 -d /tmp/langcheck \
+            games/p5r/java/io/github/p5rrecomp/Lang.java tests/jvm/LangCheck.java
+          java -cp /tmp/langcheck io.github.p5rrecomp.LangCheck
+
       - name: Install build tools
         # cmake and ninja drive the NDK build; zip packs the APK; the rest are conveniences for the log.
         run: |
